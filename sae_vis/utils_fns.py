@@ -8,6 +8,9 @@ import torch
 from torch import Tensor
 import numpy as np
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
+import einops
+from datasets.arrow_dataset import Dataset
+from transformers import AutoTokenizer
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -396,3 +399,57 @@ if MAIN:
     print(split_string(input_string, str1, str2))
 
 # %%
+
+
+
+def tokenize_and_concatenate(
+    dataset: Dataset,
+    tokenizer: AutoTokenizer,
+    streaming: bool = False,
+    max_length: int = 1024,
+    column_name: str = "text",
+    add_bos_token: bool = True,
+    num_proc: int = 10,
+) -> Dataset:
+    for key in dataset.features:
+        if key != column_name:
+            dataset = dataset.remove_columns(key)
+
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({"pad_token": "<PAD>"})
+
+    seq_len = (max_length - 1) if add_bos_token else max_length
+
+    def tokenize_function(examples: Dict[str, List[str]]) -> Dict[str, np.ndarray]:
+        text = examples[column_name]
+        # Concatenate it all into an enormous string, separated by eos_tokens
+        full_text = tokenizer.eos_token.join(text)
+        # Divide into 20 chunks of ~ equal length
+        num_chunks = 20
+        chunk_length = (len(full_text) - 1) // num_chunks + 1
+        chunks = [
+            full_text[i * chunk_length : (i + 1) * chunk_length]
+            for i in range(num_chunks)
+        ]
+        # Tokenize the chunks in parallel. Uses NumPy because HuggingFace map doesn't want tensors returned
+        tokens = tokenizer(chunks, return_tensors="np", padding=True)["input_ids"].flatten()
+        # Drop padding tokens
+        tokens = tokens[tokens != tokenizer.pad_token_id]
+        num_tokens = len(tokens)
+        num_batches = num_tokens // (seq_len)
+        # Drop the final tokens if not enough to make a full sequence
+        tokens = tokens[: seq_len * num_batches]
+        tokens = einops.rearrange(tokens, "(batch seq) -> batch seq", batch=num_batches, seq=seq_len)
+        if add_bos_token:
+            prefix = np.full((num_batches, 1), tokenizer.bos_token_id)
+            tokens = np.concatenate([prefix, tokens], axis=1)
+        return {"tokens": tokens}
+
+    tokenized_dataset = dataset.map(
+        tokenize_function,
+        batched=True,
+        num_proc=(num_proc if not streaming else None),
+        remove_columns=[column_name],
+    )
+    tokenized_dataset.set_format(type="torch", columns=["tokens"])
+    return tokenized_dataset
