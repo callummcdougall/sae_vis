@@ -7,6 +7,8 @@ setup(
     install_requires = [
         'torch',
         'einops',
+        'datasets',
+        'jaxtyping',
         # 'eindex',
     ],
     # dependency_links = [
