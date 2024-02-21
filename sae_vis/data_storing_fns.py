@@ -629,7 +629,7 @@ class MultiPromptData:
 """
         # This saves a lot of space, by removing the hidden items from display
         pattern = r'<div class="half-width-container" style="display: none;">(.*?)</div>'
-        html = re.sub(pattern, "", html, flags=re.DOTALL)
+        html_str = re.sub(pattern, "", html_str, flags=re.DOTALL)
 
         html_str = html_str.replace("Ċ", "&bsol;n")
         html_str = adjust_hovertext(html_str)
@@ -712,7 +712,7 @@ class FeatureData:
         if width is not None:
             sequence_html = sequence_html.replace("class='grid-item'", f"class='grid-item' style='width:{width}px;'")
 
-        html_string = f"""
+        html_str = f"""
 <style>
     {css}
 </style>
@@ -729,16 +729,16 @@ class FeatureData:
 """
         # This saves a lot of space, by removing the hidden items from display
         pattern = r'<div class="half-width-container" style="display: none;">(.*?)</div>'
-        html = re.sub(pattern, "", html, flags=re.DOTALL)
+        html_str = re.sub(pattern, "", html_str, flags=re.DOTALL)
         
         # idk why this bug is here, for representing newlines the wrong way
-        html_string = html_string.replace("Ċ", "&bsol;n")
-        html_string = adjust_hovertext(html_string)
+        html_str = html_str.replace("Ċ", "&bsol;n")
+        html_str = adjust_hovertext(html_str)
         
         if split_scripts:
-            return extract_and_remove_scripts(html_string) # (scripts, html_string)
+            return extract_and_remove_scripts(html_str) # (scripts, html_str)
         else:
-            return html_string
+            return html_str
     
 
 
