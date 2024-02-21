@@ -223,19 +223,22 @@ def merge_lists(*lists):
 
 def extract_and_remove_scripts(html_content: str) -> Tuple[str, str]:
     '''
-    Extracts all script tags from the HTML content, and returns them as a single string, along with the
-    original content with the script tags removed.
+    Extracts JavaScript from script tags in the HTML content, and returns it as a single string,
+    along with the original content with the script tags removed.
     '''
-    # Pattern to find <script>...</script> tags
-    pattern = r'<script[^>]*>.*?</script>'
+    # Pattern to find <script>...</script> tags and capture content inside
+    pattern = r'<script[^>]*>(.*?)</script>'
 
-    # Find all script tags
+    # Find all script tags and extract content
     scripts = re.findall(pattern, html_content, re.DOTALL)
 
     # Remove script tags from the original content
     html_without_scripts = re.sub(pattern, '', html_content, flags=re.DOTALL)
 
-    return "\n".join(scripts), html_without_scripts
+    # Join extracted JavaScript code
+    javascript = "\n".join(scripts)
+
+    return javascript, html_without_scripts
 
 
 

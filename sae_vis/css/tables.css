@@ -1,3 +1,7 @@
+table {
+    border: unset;
+    color: black;
+}
 table.table-left tr {
     border-bottom: 1px solid #eee;
     padding: 15px;
@@ -15,6 +19,7 @@ table.table-left td.left-aligned {
 h4 {
     margin-top: 30px;
     margin-bottom: 10px;
+    color: black;
 }
 .code-bold code {
     font-weight: bold;
