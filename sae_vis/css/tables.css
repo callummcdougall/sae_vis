@@ -1,0 +1,26 @@
+table.table-left tr {
+    border-bottom: 1px solid #eee;
+    padding: 15px;
+}
+table.table-left td {
+    padding: 3px 4px;
+}
+table.table-left {
+    width: 100%;
+}
+table.table-left td.left-aligned {
+    max-width: 120px;
+    overflow-x: hidden;
+}
+h4 {
+    margin-top: 30px;
+    margin-bottom: 10px;
+}
+.code-bold code {
+    font-weight: bold;
+}
+.logits-table {
+    width: 400px;
+    display: flex;
+    overflow-x: hidden;
+}
