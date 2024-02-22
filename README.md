@@ -24,6 +24,15 @@ Here is a prompt-centric visualization, containing some django syntax. The featu
 
 <img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-demo-2.png" width="800">
 
+# Models
+
+You can use any model as long as it meets these two criteria:
+
+* Your model has a `forward` method which takes `tokens` and returns a tuple of `(logits, residual, post_activations)`.
+* This forward method has a parameter `return_logits`, which is by default `True`, and when `False` it only returns `(residual, post_activations)`.
+
+Alternatively, you can pass in any model from TransformerLens and set the hook_point and hook_layer arguments to tell the library where to get the activations from.
+
 # Repository structure
 
 Here is a summary of each of the important files in this repository, as well as an explanation of what purpose they serve. Hopefully this will make it easier for other people to take and modify this code.

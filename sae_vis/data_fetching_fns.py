@@ -17,6 +17,7 @@ from IPython.display import clear_output
 from dataclasses import dataclass
 from rich import print as rprint
 from rich.table import Table
+from transformer_lens import HookedTransformer
 
 Arr = np.ndarray
 
@@ -28,7 +29,7 @@ from sae_vis.utils_fns import (
     QuantileCalculator,
     TopK,
     efficient_topk,
-    to_resid_dir,
+    TransformerLensAdapter,
 )
 from sae_vis.data_storing_fns import (
     FeatureVizParams,
@@ -45,7 +46,12 @@ from sae_vis.data_storing_fns import (
     MultiPromptData,
 )
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
 
 
 
@@ -119,10 +125,12 @@ def compute_feat_acts(
 def _get_feature_data(
     encoder: AutoEncoder,
     encoder_B: AutoEncoder,
-    model: DemoTransformer,
+    model: Union[DemoTransformer, HookedTransformer],
     tokens: Int[Tensor, "batch seq"],
     feature_indices: Union[int, List[int]],
     fvp: FeatureVizParams,
+    hook_point: Optional[str] = None,
+    hook_layer: Optional[int] = None,
 ) -> MultiFeatureData:
     '''
     Gets data that will be used to create the sequences in the feature-centric HTML visualisation.
@@ -136,8 +144,10 @@ def _get_feature_data(
             The encoder whose features we'll be analyzing.
         encoder_B: AutoEncoder
             The encoder we'll be using as a reference (i.e. finding the B-features with the highest correlation).
-        model: DemoTransformer
+        model: Union[DemoTransformer, HookedTransformer]
             The model we'll be using to get the feature activations.
+            This can either be a model which implements a `forward` method which returns (logits, residual, activations),
+            or it can be a HookedTransformer from TransformerLens.
         tokens: Int[Tensor, "batch seq"]
             The tokens we'll be using to get the feature activations. Note that we might not be using all of them; the
             number used is determined by `fvp.total_batch_size`.
@@ -146,6 +156,10 @@ def _get_feature_data(
         fvp:
             Feature visualization parameters, containing a bunch of other stuff. See the FeatureVizParams docstring for
             more information.
+        hook_point: Optional[str]
+            ONLY IF MODEL IS FROM TRANSFORMERLENS: The name of the hook point we'll be using to get the activations.
+        hook_layer: Optional[int]
+            ONLY IF MODEL IS FROM TRANSFORMERLENS: The layer of the hook point we'll be using to get the activations.
 
     Returns object of class MultiFeatureData (i.e. containing data for creating each feature visualization, as well as
     data for rank-ordering the feature visualizations when it comes time to make the prompt-centric view).
@@ -175,6 +189,20 @@ def _get_feature_data(
     if fvp.include_left_tables == False:
         encoder_B = None
 
+    # If the model is from TransformerLens, we need to wrap it in an adapter
+    # to make it look like a DemoTransformer;
+    if isinstance(model, HookedTransformer):
+        if hook_point is None or hook_layer is None:
+            raise ValueError("If the model is from TransformerLens, " +
+                             "you need to specify the hook point and layer.")
+        model = TransformerLensAdapter(model, hook_point, hook_layer)
+    else:
+        if hook_point is not None or hook_layer is not None:
+            raise ValueError("If the model is not from TransformerLens, you " +
+                             "can't specify a hook point or layer — you need " +
+                             "to change the forward method of your model to " +
+                             "return a different activation instead.")
+    
 
 
 
@@ -340,6 +368,8 @@ def get_feature_data(
     model: DemoTransformer,
     tokens: Int[Tensor, "batch seq"],
     fvp: FeatureVizParams,
+    hook_point: Optional[str] = None,
+    hook_layer: Optional[int] = None,
 ) -> MultiFeatureData:
     '''
     This is the main function which users will run to generate the feature visualization data. It batches this
@@ -363,7 +393,8 @@ def get_feature_data(
     # Break up the features into batches, and get data for each feature batch at once
     feature_indices_batches = [x.tolist() for x in torch.tensor(features_list).split(fvp.minibatch_size_features)]
     for feature_indices in feature_indices_batches:
-        new_feature_data = _get_feature_data(encoder, encoder_B, model, tokens, feature_indices, fvp)
+        new_feature_data = _get_feature_data(encoder, encoder_B, model, tokens,
+                                             feature_indices, fvp, hook_point, hook_layer)
         feature_data.update(new_feature_data)
 
     return feature_data
