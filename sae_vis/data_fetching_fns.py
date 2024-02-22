@@ -441,8 +441,15 @@ def get_sequences_data(
     # Get the top5 & bottom5 changes in logits (using `efficient_topk` which saves time by ignoring tokens where feat_act=0)
     contribution_to_logprobs = orig_logits.log_softmax(dim=-1) - new_logits.log_softmax(dim=-1)
     acts_nonzero = feat_acts_group[:, :-1].abs() > 1e-5 # [g buf]
-    top5_contribution_to_logits = efficient_topk(contribution_to_logprobs[:, :-1], acts_nonzero, k=5, largest=True)
-    bottom5_contribution_to_logits = efficient_topk(contribution_to_logprobs[:, :-1], acts_nonzero, k=5, largest=False)
+
+    # Edge case handling — if the feature never fired, raise an error
+    if not acts_nonzero.any():
+        empty_tok_k = torch.zeros(*acts_nonzero.shape, 5)
+        top5_contribution_to_logits = TopK((empty_tok_k, empty_tok_k))
+        bottom5_contribution_to_logits = TopK((empty_tok_k, empty_tok_k))
+    else:
+        top5_contribution_to_logits = efficient_topk(contribution_to_logprobs[:, :-1], acts_nonzero, k=5, largest=True)
+        bottom5_contribution_to_logits = efficient_topk(contribution_to_logprobs[:, :-1], acts_nonzero, k=5, largest=False)
 
     # Get the change in loss (which is negative of change of logprobs for correct token)
     contribution_to_loss = eindex(-contribution_to_logprobs[:, :-1], tokens_group, "g buf [g buf]")
