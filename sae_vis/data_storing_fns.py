@@ -35,10 +35,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 FEATURE_VIZ_PARAMS = {
+    "features": "The feature(s) we're analyzing. If None, we assume all the AutoEncoder's features",
+    "minibatch_size_features": "Num features in each forward pass (i.e. we break up the features to avoid OOM errors)",
     "total_batch_size": "Total number of sequences in our batch",
     "minibatch_size": "Number of seqs in each forward pass (i.e. we break up the total_batch_size to avoid OOM errors)",
-    "total_features": "Total number of features we're analyzing",
-    "minibatch_size_features": "Num features in each forward pass (i.e. we break up the total_features to avoid OOM errors)",
     "include_left_tables": "Whether to include the left-hand tables in the main visualization",
     "rows_in_left_tables": "Number of rows in the tables on the left hand side of the main visualization",
     "buffer": "How many posns to avoid at the start & end of sequences (so we see the surrounding context)",
@@ -56,7 +56,7 @@ class FeatureVizParams:
     total_batch_size: int = 2048
     minibatch_size: int = 64
 
-    total_features: int = 1024
+    features: Optional[Union[int, List[int]]] = None
     minibatch_size_features: int = 256
 
     include_left_tables: bool = True
@@ -760,6 +760,15 @@ class MultiFeatureData:
 
     def __getitem__(self, idx: int) -> FeatureData:
         return self.feature_data_dict[idx]
+    
+    def keys(self) -> List[int]:
+        return list(self.feature_data_dict.keys())
+
+    def values(self) -> List[FeatureData]:
+        return list(self.feature_data_dict.values())
+
+    def items(self) -> List[Tuple[int, FeatureData]]:
+        return list(self.feature_data_dict.items())
 
     def update(self, other: "MultiFeatureData") -> None:
         '''

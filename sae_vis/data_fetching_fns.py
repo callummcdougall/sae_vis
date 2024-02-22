@@ -128,7 +128,7 @@ def _get_feature_data(
     
     Note - this function isn't called directly by the user, it actually gets called by the `get_feature_data` function
     which does exactly the same thing except it also batches this computation by features (in accordance with the
-    arguments `total_features` and `minibatch_size_features` from the FeatureVizParams object).
+    arguments `features` and `minibatch_size_features` from the FeatureVizParams object).
 
     Args:
         encoder: AutoEncoder
@@ -351,8 +351,16 @@ def get_feature_data(
     # Create objects to store all the data we'll get from `_get_feature_data`
     feature_data = MultiFeatureData()
 
+    # Get a feature list (need to deal with the case where `fvp.features` is an int, or None)
+    if fvp.features is None:
+        features_list = list(range(encoder.cfg.d_hidden))
+    elif isinstance(fvp.features, int):
+        features_list = list(range(fvp.features))
+    else:
+        features_list = list(fvp.features)
+
     # Break up the features into batches, and get data for each feature batch at once
-    feature_indices_batches = [x.tolist() for x in torch.arange(fvp.total_features).split(fvp.minibatch_size_features)]
+    feature_indices_batches = [x.tolist() for x in torch.tensor(features_list).split(fvp.minibatch_size_features)]
     for feature_indices in feature_indices_batches:
         new_feature_data = _get_feature_data(encoder, encoder_B, model, tokens, feature_indices, fvp)
         feature_data.update(new_feature_data)
