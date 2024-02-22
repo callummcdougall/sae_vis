@@ -22,7 +22,7 @@ Feature #8 (below) seems to be a fuzzy skip trigram, with the pattern being `(dj
 
 Here is a prompt-centric visualization, containing some django syntax. The features are sorted by their loss effect on the `django` token (i.e. how much the output of this particular feature changes the logprobs for the correct token). We can see that feature #8 from above is by far the most loss-reducing. We can also sort the features by activation size or activation quantile, this again shows that feature #8 is dominant.
 
-<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-demo-2.png" width="880">
+<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-demo-2.png" width="800">
 
 # Repository structure
 
