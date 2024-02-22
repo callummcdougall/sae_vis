@@ -146,11 +146,11 @@ class HistogramData:
         elif tickmode == "5 ticks":
             # ticks chosen in multiples of 0.1, so we have 3 on the longer side
             if max_value > -min_value:
-                tickrange = 0.1 * int(1e-4 + max_value / (3 * 0.1))
+                tickrange = 0.1 * int(1e-4 + max_value / (3 * 0.1)) + 1e-6
                 num_positive_ticks = 3
                 num_negative_ticks = int(-min_value / tickrange)
             else:
-                tickrange = 0.1 * int(1e-4 + -min_value / (3 * 0.1))
+                tickrange = 0.1 * int(1e-4 + -min_value / (3 * 0.1)) + 1e-6
                 num_negative_ticks = 3
                 num_positive_ticks = int(max_value / tickrange)
             tick_vals = merge_lists(
