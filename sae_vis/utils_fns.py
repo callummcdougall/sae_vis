@@ -1,16 +1,19 @@
 # %%
-
+from functools import partial
 from jaxtyping import Float, Int, Bool
 from typing import Tuple, Optional, Union, Dict, List
 from dataclasses import dataclass
 import re
 import torch
+from torch import nn
 from torch import Tensor
 import numpy as np
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 import einops
 from datasets.arrow_dataset import Dataset
 from transformers import AutoTokenizer
+from transformer_lens import utils
+
 
 if torch.cuda.is_available():
     device = torch.device("cuda")
@@ -461,3 +464,49 @@ def tokenize_and_concatenate(
     )
     tokenized_dataset.set_format(type="torch", columns=["tokens"])
     return tokenized_dataset
+
+class TransformerLensAdapter(nn.Module):
+    def __init__(self, model, hook_point, hook_layer):
+        super().__init__()
+        self.model = model
+        self.hook_point = hook_point
+        self.hook_layer = hook_layer
+    
+    def forward(self, tokens, return_logits: bool = True):
+        activation_arr = []
+        residual_arr = []
+
+        logits = self.model.run_with_hooks(tokens, fwd_hooks=[
+            (utils.get_act_name(self.hook_point, self.hook_layer),
+             partial(TransformerLensAdapter.hook_fn_store_act, acts_arr=activation_arr)),
+            (utils.get_act_name("resid_post", self.model.cfg.n_layers-1),
+             partial(TransformerLensAdapter.hook_fn_store_act, acts_arr=residual_arr))
+        ])
+
+        residual = residual_arr[0]
+        activation = activation_arr[0]
+
+        if return_logits:
+            return logits, residual, activation
+        return residual, activation
+    
+    @staticmethod
+    def hook_fn_store_act(act, hook, acts_arr):
+        acts_arr.append(act)
+        return act
+
+    @property
+    def tokenizer(self):
+        return self.model.tokenizer
+    
+    @property
+    def cfg(self):
+        return self.model.cfg
+
+    @property
+    def W_U(self):
+        return self.model.W_U
+
+    @property
+    def W_out(self):
+        return self.model.W_out
