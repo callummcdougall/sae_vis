@@ -58,6 +58,7 @@ class FeatureVizParams:
 
     total_features: int = 1024
     minibatch_size_features: int = 256
+    first_feature_idx: int = 0
 
     include_left_tables: bool = True
     rows_in_left_tables: int = 3

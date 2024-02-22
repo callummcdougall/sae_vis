@@ -352,7 +352,10 @@ def get_feature_data(
     feature_data = MultiFeatureData()
 
     # Break up the features into batches, and get data for each feature batch at once
-    feature_indices_batches = [x.tolist() for x in torch.arange(fvp.total_features).split(fvp.minibatch_size_features)]
+    feature_indices_range = torch.arange(fvp.first_feature_idx,
+                                         fvp.first_feature_idx + fvp.total_features)
+    feature_indices_batches = [x.tolist()
+                               for x in feature_indices_range.split(fvp.minibatch_size_features)]
     for feature_indices in feature_indices_batches:
         new_feature_data = _get_feature_data(encoder, encoder_B, model, tokens, feature_indices, fvp)
         feature_data.update(new_feature_data)
