@@ -12,7 +12,12 @@ import einops
 from datasets.arrow_dataset import Dataset
 from transformers import AutoTokenizer
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
 
 
 Arr = np.ndarray
@@ -295,7 +300,7 @@ class QuantileCalculator:
             self.quantile_data = None
         # Else, get the actual quantile values (which we'll use to calculate the quantiles of any new data)
         else:
-            self.quantiles = torch.tensor(quantiles + [1.0]).to(device)
+            self.quantiles = torch.tensor(quantiles + [1.0], dtype=data.dtype).to(device)
             self.quantile_data = torch.quantile(data, torch.tensor(quantiles).to(device, dtype=data.dtype), dim=-1).T
 
 
