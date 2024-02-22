@@ -2,7 +2,7 @@
 
 This codebase was designed to replicate Anthropic's sparse autoencoder visualisations, which you can see [here](https://transformer-circuits.pub/2023/monosemantic-features/vis/a1.html). The codebase provides 2 different views: a **feature-centric view** (which is like the one in the link, i.e. we look at one particular feature and see things like which tokens fire strongest on that feature) and a **prompt-centric view** (where we look at once particular prompt and see which features fire strongest on that prompt according to a variety of different metrics).
 
-You can use my [Colab](https://colab.research.google.com/drive/12Pr0F5ZSTUk65PBgjqNjy0vuyKrvbDty#scrollTo=0Js1mtcXd2LU) to generate more of these visualisations. You can use this [sae visualiser](https://www.perfectlynormal.co.uk/blog-sae) to navigate through the first thousand features of the aforementioned autoencoder.
+You can use my [Colab](https://colab.research.google.com/drive/1e3SjTDnJ1TEwsphONocJwtBdIUo7pOFq?usp=sharing) to generate more of these visualisations. You can use this [sae visualiser](https://www.perfectlynormal.co.uk/blog-sae) to navigate through the first thousand features of the aforementioned autoencoder.
 
 There are 2 main sections of this readme: **views** (which explains the 2 different views that this library can create, using an example) and **repository structure** (which explains the different files in this repository and how they interact). If you just want to be able to run the code and don't care about exactly hwo it works, we recommend you read **views** and then jump into the Colab. Only read **repository structure** if you're curious, or if you want to modify the code in some way.
 
@@ -22,7 +22,7 @@ Feature #8 (below) seems to be a fuzzy skip trigram, with the pattern being `(dj
 
 Here is a prompt-centric visualization, containing some django syntax. The features are sorted by their loss effect on the `django` token (i.e. how much the output of this particular feature changes the logprobs for the correct token). We can see that feature #8 from above is by far the most loss-reducing. We can also sort the features by activation size or activation quantile, this again shows that feature #8 is dominant.
 
-<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-demo-2.png" width="880">
+<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-demo-2.png" width="800">
 
 # Models
 
@@ -37,7 +37,7 @@ Alternatively, you can pass in any model from TransformerLens and set the hook_p
 
 Here is a summary of each of the important files in this repository, as well as an explanation of what purpose they serve. Hopefully this will make it easier for other people to take and modify this code.
 
-If you just want to run the code and don't care as much about how it works, I recommend you stop reading here, and instead go to the [Colab](https://colab.research.google.com/drive/1u8larhpxy8w4mMsJiSBddNOzFGj7_RTn).
+If you just want to run the code and don't care as much about how it works, I recommend you stop reading here, and instead go to the [Colab](https://colab.research.google.com/drive/1e3SjTDnJ1TEwsphONocJwtBdIUo7pOFq?usp=sharing).
 
 ```
 sae-viz

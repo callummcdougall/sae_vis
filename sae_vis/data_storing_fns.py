@@ -40,10 +40,10 @@ else:
 
 
 FEATURE_VIZ_PARAMS = {
+    "features": "The feature(s) we're analyzing. If None, we assume all the AutoEncoder's features",
+    "minibatch_size_features": "Num features in each forward pass (i.e. we break up the features to avoid OOM errors)",
     "total_batch_size": "Total number of sequences in our batch",
     "minibatch_size": "Number of seqs in each forward pass (i.e. we break up the total_batch_size to avoid OOM errors)",
-    "total_features": "Total number of features we're analyzing",
-    "minibatch_size_features": "Num features in each forward pass (i.e. we break up the total_features to avoid OOM errors)",
     "include_left_tables": "Whether to include the left-hand tables in the main visualization",
     "rows_in_left_tables": "Number of rows in the tables on the left hand side of the main visualization",
     "buffer": "How many posns to avoid at the start & end of sequences (so we see the surrounding context)",
@@ -61,7 +61,7 @@ class FeatureVizParams:
     total_batch_size: int = 2048
     minibatch_size: int = 64
 
-    total_features: int = 1024
+    features: Optional[Union[int, List[int]]] = None
     minibatch_size_features: int = 256
 
     include_left_tables: bool = True
@@ -151,11 +151,11 @@ class HistogramData:
         elif tickmode == "5 ticks":
             # ticks chosen in multiples of 0.1, so we have 3 on the longer side
             if max_value > -min_value:
-                tickrange = 0.1 * int(1e-4 + max_value / (3 * 0.1))
+                tickrange = 0.1 * int(1e-4 + max_value / (3 * 0.1)) + 1e-6
                 num_positive_ticks = 3
                 num_negative_ticks = int(-min_value / tickrange)
             else:
-                tickrange = 0.1 * int(1e-4 + -min_value / (3 * 0.1))
+                tickrange = 0.1 * int(1e-4 + -min_value / (3 * 0.1)) + 1e-6
                 num_negative_ticks = 3
                 num_positive_ticks = int(max_value / tickrange)
             tick_vals = merge_lists(
@@ -765,6 +765,15 @@ class MultiFeatureData:
 
     def __getitem__(self, idx: int) -> FeatureData:
         return self.feature_data_dict[idx]
+    
+    def keys(self) -> List[int]:
+        return list(self.feature_data_dict.keys())
+
+    def values(self) -> List[FeatureData]:
+        return list(self.feature_data_dict.values())
+
+    def items(self) -> List[Tuple[int, FeatureData]]:
+        return list(self.feature_data_dict.items())
 
     def update(self, other: "MultiFeatureData") -> None:
         '''

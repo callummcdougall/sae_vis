@@ -137,7 +137,7 @@ def _get_feature_data(
     
     Note - this function isn't called directly by the user, it actually gets called by the `get_feature_data` function
     which does exactly the same thing except it also batches this computation by features (in accordance with the
-    arguments `total_features` and `minibatch_size_features` from the FeatureVizParams object).
+    arguments `features` and `minibatch_size_features` from the FeatureVizParams object).
 
     Args:
         encoder: AutoEncoder
@@ -221,8 +221,8 @@ def _get_feature_data(
     corrcoef_encoder_B = BatchedCorrCoef()
 
     # Get encoder & decoder directions
-    feature_out_dir = encoder.W_dec[feature_indices] # (feats, d_mlp)
-    feature_mlp_out_dir = feature_out_dir @ model.W_out[0] # (feats, d_model)
+    feature_out_dir = encoder.W_dec[feature_indices] # (feats, d_act) — d_act can eg. be d_mlp or d_model
+    feature_resid_dir = to_resid_dir(feature_out_dir, model) # (feats, d_model)
 
     t1 = time.time()
 
@@ -279,7 +279,7 @@ def _get_feature_data(
             tokens = tokens,
             feat_acts = all_feat_acts[..., i],
             resid_post = all_resid_post,
-            feature_mlp_out_dir = feature_mlp_out_dir[i],
+            feature_resid_dir = feature_resid_dir[i],
             W_U = model.W_U,
             fvp = fvp,
         )
@@ -290,7 +290,7 @@ def _get_feature_data(
     # ! Get all data for the middle column visualisations, i.e. the two histograms & the logit table
 
     # Get the logits of all features (i.e. the directions this feature writes to the logit output)
-    logits = einops.einsum(feature_mlp_out_dir, model.W_U, "feats d_model, d_model d_vocab -> feats d_vocab")
+    logits = einops.einsum(feature_resid_dir, model.W_U, "feats d_model, d_model d_vocab -> feats d_vocab")
 
     for i, feat in enumerate(feature_indices):
         _logits = logits[i]
@@ -382,8 +382,16 @@ def get_feature_data(
     # Create objects to store all the data we'll get from `_get_feature_data`
     feature_data = MultiFeatureData()
 
+    # Get a feature list (need to deal with the case where `fvp.features` is an int, or None)
+    if fvp.features is None:
+        features_list = list(range(encoder.cfg.d_hidden))
+    elif isinstance(fvp.features, int):
+        features_list = list(range(fvp.features))
+    else:
+        features_list = list(fvp.features)
+
     # Break up the features into batches, and get data for each feature batch at once
-    feature_indices_batches = [x.tolist() for x in torch.arange(fvp.total_features).split(fvp.minibatch_size_features)]
+    feature_indices_batches = [x.tolist() for x in torch.tensor(features_list).split(fvp.minibatch_size_features)]
     for feature_indices in feature_indices_batches:
         new_feature_data = _get_feature_data(encoder, encoder_B, model, tokens,
                                              feature_indices, fvp, hook_point, hook_layer)
@@ -399,7 +407,7 @@ def get_sequences_data(
     tokens: Int[Tensor, "batch seq"],
     feat_acts: Float[Tensor, "batch seq"],
     resid_post: Float[Tensor, "batch seq d_model"],
-    feature_mlp_out_dir: Float[Tensor, "d_model"],
+    feature_resid_dir: Float[Tensor, "d_model"],
     W_U: Float[Tensor, "d_model d_vocab"],
     fvp: FeatureVizParams,
 ) -> SequenceMultiGroupData:
@@ -419,7 +427,7 @@ def get_sequences_data(
             The activations of the feature we're interested in, for each token in the batch.
         resid_post:
             The residual stream values before final layernorm, for each token in the batch.
-        feature_mlp_out_dir:
+        feature_resid_dir:
             The direction this feature writes to the logit output (i.e. the direction we'll be erasing from resid_post).
         W_U:
             The model's unembedding matrix, which we'll use to get the logits.
@@ -463,7 +471,7 @@ def get_sequences_data(
     resid_post_group: torch.Tensor = eindex(resid_post, indices_full, "[g buf 0] [g buf 1] d_model")
 
     # Get this feature's output vector, using an outer product over the feature activations for all tokens
-    resid_post_feature_effect = einops.einsum(feat_acts_group, feature_mlp_out_dir, "g buf, d_model -> g buf d_model")
+    resid_post_feature_effect = einops.einsum(feat_acts_group, feature_resid_dir, "g buf, d_model -> g buf d_model")
 
     # Get new ablated logits, and old ones
     new_resid_post = resid_post_group - resid_post_feature_effect
@@ -473,8 +481,15 @@ def get_sequences_data(
     # Get the top5 & bottom5 changes in logits (using `efficient_topk` which saves time by ignoring tokens where feat_act=0)
     contribution_to_logprobs = orig_logits.log_softmax(dim=-1) - new_logits.log_softmax(dim=-1)
     acts_nonzero = feat_acts_group[:, :-1].abs() > 1e-5 # [g buf]
-    top5_contribution_to_logits = efficient_topk(contribution_to_logprobs[:, :-1], acts_nonzero, k=5, largest=True)
-    bottom5_contribution_to_logits = efficient_topk(contribution_to_logprobs[:, :-1], acts_nonzero, k=5, largest=False)
+
+    # Edge case handling — if the feature never fired, raise an error
+    if not acts_nonzero.any():
+        empty_tok_k = torch.zeros(*acts_nonzero.shape, 5)
+        top5_contribution_to_logits = TopK((empty_tok_k, empty_tok_k))
+        bottom5_contribution_to_logits = TopK((empty_tok_k, empty_tok_k))
+    else:
+        top5_contribution_to_logits = efficient_topk(contribution_to_logprobs[:, :-1], acts_nonzero, k=5, largest=True)
+        bottom5_contribution_to_logits = efficient_topk(contribution_to_logprobs[:, :-1], acts_nonzero, k=5, largest=False)
 
     # Get the change in loss (which is negative of change of logprobs for correct token)
     contribution_to_loss = eindex(-contribution_to_logprobs[:, :-1], tokens_group, "g buf [g buf]")
@@ -562,7 +577,7 @@ def get_prompt_data(
 
     feature_act_dir = encoder.W_enc[:, feature_idx] # [d_mlp feats]
     feature_out_dir = encoder.W_dec[feature_idx] # [feats d_mlp]
-    feature_mlp_out_dir = feature_out_dir @ model.W_out[0] # [feats d_model]
+    feature_resid_dir = to_resid_dir(feature_out_dir, model) # [feats d_model]
     assert feature_act_dir.T.shape == feature_out_dir.shape == (len(feature_idx), encoder.cfg.d_mlp)
 
     # ! Define hook functions to cache all the info required for feature ablation, then run those hook fns
@@ -584,7 +599,7 @@ def get_prompt_data(
         # ! Calculate all data for the sequences (this is the only truly 'new' bit of calculation we need to do)
 
         # Get this feature's output vector, using an outer product over the feature activations for all tokens
-        resid_post_feature_effect = einops.einsum(feat_acts[:, i], feature_mlp_out_dir[i], "seq, d_model -> seq d_model")
+        resid_post_feature_effect = einops.einsum(feat_acts[:, i], feature_resid_dir[i], "seq, d_model -> seq d_model")
         
         # Ablate the output vector from the residual stream, and get logits post-ablation
         new_resid_post = resid_post - resid_post_feature_effect
@@ -612,7 +627,7 @@ def get_prompt_data(
 
         # Get the logits for the correct tokens
         logits_for_correct_tokens = einops.einsum(
-            feature_mlp_out_dir[i], correct_token_unembeddings,
+            feature_resid_dir[i], correct_token_unembeddings,
             "d_model, d_model seq -> seq"
         )
 

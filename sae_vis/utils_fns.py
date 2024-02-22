@@ -11,6 +11,7 @@ import numpy as np
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 import einops
 from datasets.arrow_dataset import Dataset
+from sae_vis.model_fns import DemoTransformer
 from transformers import AutoTokenizer
 from transformer_lens import utils
 
@@ -510,3 +511,20 @@ class TransformerLensAdapter(nn.Module):
     @property
     def W_out(self):
         return self.model.W_out
+
+      
+def to_resid_dir(dir: Tensor, model: DemoTransformer):
+    """
+        Takes a direction (eg. in the post-ReLU MLP activations) and returns
+        the corresponding direction in the residual stream.
+
+        Args:
+            dir: 
+    """
+    
+    if dir.shape[1] == model.cfg.d_mlp:
+        return dir @ model.W_out[0] # (feats, d_model)
+    elif dir.shape[1] == model.cfg.d_model:
+        return dir
+    else:
+        raise NotImplementedError("The hook your SAE was trained on isn't yet supported")
