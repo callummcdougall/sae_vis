@@ -1,32 +1,44 @@
 # %%
-from functools import partial
+
 from jaxtyping import Float, Int, Bool
 from typing import Tuple, Optional, Union, Dict, List
-from dataclasses import dataclass
 import re
 import torch
-from torch import nn
 from torch import Tensor
 import numpy as np
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
-import einops
-from datasets.arrow_dataset import Dataset
-from sae_vis.model_fns import DemoTransformer
-from transformers import AutoTokenizer
+from tqdm import tqdm
+
 from transformer_lens import utils
 
 
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-elif torch.backends.mps.is_available():
-    device = torch.device("mps")
-else:
-    device = torch.device("cpu")
+def get_device() -> torch.device:
+    '''
+    Helper function to return the correct device (cuda, mps, or cpu).
+    '''
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+    return device
 
+device = get_device()
 
 Arr = np.ndarray
 
 MAIN = __name__ == "__main__"
+
+
+
+def create_iterator(iterator, verbose: bool, desc: Optional[str] = None):
+    '''
+    Returns an iterator, useful for reducing code repetition.
+    '''
+    return tqdm(iterator, desc=desc, leave=False) if verbose else iterator
+
+
 
 def k_largest_indices(
     x: Float[Tensor, "rows cols"],
@@ -156,28 +168,34 @@ def to_str_tokens(vocab_dict: Dict[int, str], tokens: Union[int, torch.Tensor]):
 
 class TopK:
     '''
-    Wrapper around the object returned by torch.topk. This is useful because:
+    This function implements a version of torch.topk over the last dimension. It offers the following:
 
         (1) Nicer type signatures (the default obj returned by torck.topk isn't well typed)
-        (2) We have helper functions for indexing & other standard tensor operations like .ndim, .shape, etc.
+        (2) Helper functions for indexing & other standard tensor operations like .ndim, .shape, etc.
+        (3) An efficient topk calculation, which doesn't bother applying it to the zero elements of a tensor.
     '''
     values: Arr
     indices: Arr
 
-    def __init__(self, obj: Optional[Tuple[Arr, Arr]] = None):
-        '''
-        We either initialize with the actual object returned by torch.topk, or with `None` if we want to
-        add to this TopK object incrementally via the `concat` method.
-        '''
-        self.values: Arr = obj[0] if isinstance(obj[0], Arr) else obj[0].detach().cpu().numpy()
-        self.indices: Arr = obj[1] if isinstance(obj[1], Arr) else obj[1].detach().cpu().numpy()
+    def __init__(
+        self,
+        tensor: Float[Tensor, "... d"],
+        k: int,
+        largest: bool = True,
+        tensor_mask: Optional[Bool[Tensor, "..."]] = None,
+    ):
+        self.k = k
+        self.largest = largest
+        self.values, self.indices = self.topk(tensor, tensor_mask)
     
     def __getitem__(self, item) -> "TopK":
-        return TopK((self.values[item], self.indices[item]))
+        new_topk = TopK.__new__(TopK)
+        new_topk.k = self.k
+        new_topk.largest = self.largest
+        new_topk.values = self.values[item]
+        new_topk.indices = self.indices[item]
+        return new_topk
         
-    def clone(self) -> "TopK":
-        return TopK((self.values.copy(), self.indices.copy()))
-    
     def __len__(self) -> int:
         return len(self.values)
     
@@ -192,32 +210,34 @@ class TopK:
     def numel(self) -> int:
         return self.values.size
 
+    def topk(
+        self,
+        tensor: Float[Tensor, "... d"],
+        tensor_mask: Optional[Bool[Tensor, "..."]] = None,
+    ) -> Tuple[Arr, Arr]:
+        '''
+        This is an efficient version of `torch.topk(..., dim=-1)`. It saves time by only doing the topk calculation over
+        the bits of `tensor` where `tensor_mask=True`. This is useful when `tensor` is very sparse, e.g. it has shape
+        (batch, seq, d_vocab) and its elements are zero if the corresponding token has feature activation zero. In this
+        case, we don't want to waste time taking topk over a tensor of zeros.
+        '''
+        # If no tensor mask is provided, then we just return the topk values and indices
+        if tensor_mask is None:
+            topk = tensor.topk(k=self.k, largest=self.largest)
+            return utils.to_numpy(topk.values), utils.to_numpy(topk.indices)
 
+        # Get the topk of the tensor, but only computed over the values of the tensor which are nontrivial
+        tensor_nontrivial_values = tensor[tensor_mask] # shape [rows d]
+        topk = tensor_nontrivial_values.topk(k=self.k, largest=self.largest) # shape [rows k]
 
-def efficient_topk(
-    tensor: Float[Tensor, "... d"],
-    tensor_mask: Bool[Tensor, "..."],
-    k: int,
-    largest: bool = True,
-) -> TopK:
-    '''
-    This is an efficient version of `torch.topk(..., dim=-1)`. It saves time by only doing the topk calculation over
-    the bits of `tensor` where `tensor_mask=True`. This is useful when `tensor` is very sparse, e.g. it has shape
-    (batch, seq, d_vocab) and its elements are zero if the corresponding token has feature activation zero. In this
-    case, we don't want to waste time taking topk over a tensor of zeros.
-    '''
-    # Get the topk of the tensor, but only computed over the values of the tensor which are nontrivial
-    tensor_nontrivial_values = tensor[tensor_mask] # shape [rows d]
-    topk = tensor_nontrivial_values.topk(k=k, largest=largest) # shape [rows k]
+        # Get an array of indices and values (with unimportant elements) which we'll index into using the topk object
+        topk_shape = (*tensor_mask.shape, self.k)
+        topk_indices = torch.zeros(topk_shape).to(device).long() # shape [... k]
+        topk_indices[tensor_mask] = topk.indices
+        topk_values = torch.zeros(topk_shape).to(device) # shape [... k]
+        topk_values[tensor_mask] = topk.values
 
-    # Get an array of indices and values (with unimportant elements) which we'll index into using the topk object
-    topk_shape = (*tensor_mask.shape, k)
-    topk_indices = torch.zeros(topk_shape).to(device).long() # shape [... k]
-    topk_indices[tensor_mask] = topk.indices
-    topk_values = torch.zeros(topk_shape).to(device) # shape [... k]
-    topk_values[tensor_mask] = topk.values
-
-    return TopK((topk_values, topk_indices))
+        return utils.to_numpy(topk_values), utils.to_numpy(topk_indices)
 
 
 
@@ -411,120 +431,6 @@ if MAIN:
     print(split_string(input_string, str1, str2))
 
 # %%
-
-
-
-def tokenize_and_concatenate(
-    dataset: Dataset,
-    tokenizer: AutoTokenizer,
-    streaming: bool = False,
-    max_length: int = 1024,
-    column_name: str = "text",
-    add_bos_token: bool = True,
-    num_proc: int = 10,
-) -> Dataset:
-    for key in dataset.features:
-        if key != column_name:
-            dataset = dataset.remove_columns(key)
-
-    if tokenizer.pad_token is None:
-        tokenizer.add_special_tokens({"pad_token": "<PAD>"})
-
-    seq_len = (max_length - 1) if add_bos_token else max_length
-
-    def tokenize_function(examples: Dict[str, List[str]]) -> Dict[str, np.ndarray]:
-        text = examples[column_name]
-        # Concatenate it all into an enormous string, separated by eos_tokens
-        full_text = tokenizer.eos_token.join(text)
-        # Divide into 20 chunks of ~ equal length
-        num_chunks = 20
-        chunk_length = (len(full_text) - 1) // num_chunks + 1
-        chunks = [
-            full_text[i * chunk_length : (i + 1) * chunk_length]
-            for i in range(num_chunks)
-        ]
-        # Tokenize the chunks in parallel. Uses NumPy because HuggingFace map doesn't want tensors returned
-        tokens = tokenizer(chunks, return_tensors="np", padding=True)["input_ids"].flatten()
-        # Drop padding tokens
-        tokens = tokens[tokens != tokenizer.pad_token_id]
-        num_tokens = len(tokens)
-        num_batches = num_tokens // (seq_len)
-        # Drop the final tokens if not enough to make a full sequence
-        tokens = tokens[: seq_len * num_batches]
-        tokens = einops.rearrange(tokens, "(batch seq) -> batch seq", batch=num_batches, seq=seq_len)
-        if add_bos_token:
-            prefix = np.full((num_batches, 1), tokenizer.bos_token_id)
-            tokens = np.concatenate([prefix, tokens], axis=1)
-        return {"tokens": tokens}
-
-    tokenized_dataset = dataset.map(
-        tokenize_function,
-        batched=True,
-        num_proc=(num_proc if not streaming else None),
-        remove_columns=[column_name],
-    )
-    tokenized_dataset.set_format(type="torch", columns=["tokens"])
-    return tokenized_dataset
-
-class TransformerLensAdapter(nn.Module):
-    def __init__(self, model, hook_point, hook_layer):
-        super().__init__()
-        self.model = model
-        self.hook_point = hook_point
-        self.hook_layer = hook_layer
     
-    def forward(self, tokens, return_logits: bool = True):
-        activation_arr = []
-        residual_arr = []
 
-        logits = self.model.run_with_hooks(tokens, fwd_hooks=[
-            (utils.get_act_name(self.hook_point, self.hook_layer),
-             partial(TransformerLensAdapter.hook_fn_store_act, acts_arr=activation_arr)),
-            (utils.get_act_name("resid_post", self.model.cfg.n_layers-1),
-             partial(TransformerLensAdapter.hook_fn_store_act, acts_arr=residual_arr))
-        ])
 
-        residual = residual_arr[0]
-        activation = activation_arr[0]
-
-        if return_logits:
-            return logits, residual, activation
-        return residual, activation
-    
-    @staticmethod
-    def hook_fn_store_act(act, hook, acts_arr):
-        acts_arr.append(act)
-        return act
-
-    @property
-    def tokenizer(self):
-        return self.model.tokenizer
-    
-    @property
-    def cfg(self):
-        return self.model.cfg
-
-    @property
-    def W_U(self):
-        return self.model.W_U
-
-    @property
-    def W_out(self):
-        return self.model.W_out
-
-      
-def to_resid_dir(dir: Tensor, model: DemoTransformer):
-    """
-        Takes a direction (eg. in the post-ReLU MLP activations) and returns
-        the corresponding direction in the residual stream.
-
-        Args:
-            dir: 
-    """
-    
-    if dir.shape[1] == model.cfg.d_mlp:
-        return dir @ model.W_out[0] # (feats, d_model)
-    elif dir.shape[1] == model.cfg.d_model:
-        return dir
-    else:
-        raise NotImplementedError("The hook your SAE was trained on isn't yet supported")

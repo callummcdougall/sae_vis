@@ -10,6 +10,7 @@ from jaxtyping import Float
 import re
 from rich import print as rprint
 from rich.table import Table
+from transformer_lens import utils
 
 Arr = np.ndarray
 
@@ -19,6 +20,7 @@ from sae_vis.utils_fns import (
     TopK,
     merge_lists,
     extract_and_remove_scripts,
+    device,
 )
 from sae_vis.html_fns import (
     generate_seq_html,
@@ -29,40 +31,39 @@ from sae_vis.html_fns import (
     adjust_hovertext,
 )
 
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-elif torch.backends.mps.is_available():
-    device = torch.device("mps")
-else:
-    device = torch.device("cpu")
-
 
 
 
 FEATURE_VIZ_PARAMS = {
-    "features": "The feature(s) we're analyzing. If None, we assume all the AutoEncoder's features",
-    "minibatch_size_features": "Num features in each forward pass (i.e. we break up the features to avoid OOM errors)",
-    "total_batch_size": "Total number of sequences in our batch",
-    "minibatch_size": "Number of seqs in each forward pass (i.e. we break up the total_batch_size to avoid OOM errors)",
-    "include_left_tables": "Whether to include the left-hand tables in the main visualization",
-    "rows_in_left_tables": "Number of rows in the tables on the left hand side of the main visualization",
-    "buffer": "How many posns to avoid at the start & end of sequences (so we see the surrounding context)",
-    "n_groups": "Number of quantile groups for the sequences on the right hand side (not including top-k and bottom-k)",
-    "first_group_size": "Number of sequences in the top-k and bottom-k groups",
-    "other_groups_size": "Number of sequences in the other groups (i.e. the `n_groups` groups of quantiles)",
-    "border": "Whether to include the shadow border around the main visualization",
-    "verbose": "Whether to print out the time taken for each task, and the estimated time for all features",
+    "hook_point": "The hook point we're using to extract the activations (if we're using a TransformerLens model). \
+This should be the full-length hook name, i.e. the thing returned by `utils.get_act_name`.",
+    "features": "The feature(s) we're analyzing. If None, we analyze all of the AutoEncoder's features.",
+    "minibatch_size_features": "Num features in each batch of calculations (i.e. we break up the features to avoid OOM \
+errors).",
+    "minibatch_size_tokens": "Number of seqs in each forward pass (i.e. we break up the tokens in our batch to avoid \
+OOM errors). Note, this is lower-level than breaking up by features (i.e. we break up the calculation by features \
+first, then within each feature group we break it up by tokens).",
+    "include_left_tables": "Whether to include the left-hand tables in the main visualization.",
+    "rows_in_left_tables": "Number of rows in the tables on the left hand side of the main visualization.",
+    "buffer": "How many tokens to add as context to each sequence. We also avoid choosing tokens from within these \
+buffer positions.",
+    "n_groups": "Number of quantile groups for the sequences on the right hand side (not including top-k).",
+    "first_group_size": "Number of sequences in the top-k group.",
+    "other_groups_size": "Number of sequences in each of the quantile groups.",
+    "border": "Whether to include the shadow border around the main visualization.",
+    "verbose": "Whether to print out the time taken for each task, and the estimated time for all features (note, this \
+can be very noisy when the number of features is small).",
 }
 
 
 @dataclass
 class FeatureVizParams:
 
-    total_batch_size: int = 2048
-    minibatch_size: int = 64
+    hook_point: Optional[str] = None
 
     features: Optional[Union[int, List[int]]] = None
     minibatch_size_features: int = 256
+    minibatch_size_tokens: int = 64
 
     include_left_tables: bool = True
     rows_in_left_tables: int = 3
@@ -72,7 +73,7 @@ class FeatureVizParams:
     other_groups_size: int = 5
     border: bool = True
 
-    verbose: bool = False
+    verbose: bool = True
 
     def help(self) -> None:
         '''
@@ -163,6 +164,7 @@ class HistogramData:
                 [0], # zero (always is a tick)
                 [tickrange * i for i in range(1, 1+num_positive_ticks)] # positive values
             )
+            tick_vals = [round(t, 1) for t in tick_vals]
 
         self.bar_heights = bar_heights.tolist()
         self.bar_values = bar_values.tolist()
@@ -368,6 +370,15 @@ class LeftTablesData:
         '''
         The `get_html` function returns the HTML for the left-hand tables, wrapped in a 'grid-item' div.
         '''
+        # Need to deal with b_features_correlated separately, in case it's None
+        kwargs = {}
+        if self.b_features_correlated is not None:
+            kwargs.update(dict(
+                correlated_features_indices = self.b_features_correlated[0].indices.tolist(),
+                correlated_features_pearson = self.b_features_correlated[0].values.tolist(),
+                correlated_features_l1 = self.b_features_correlated[1].tolist(),
+            ))
+
         # Generate the left-hand HTML tables
         html_str = generate_left_tables_html(
             neuron_alignment_indices = self.neuron_alignment[0].indices.tolist(),
@@ -376,9 +387,7 @@ class LeftTablesData:
             correlated_neurons_indices = self.neurons_correlated[0].indices.tolist(),
             correlated_neurons_pearson = self.neurons_correlated[0].values.tolist(),
             correlated_neurons_l1 = self.neurons_correlated[1].tolist(),
-            correlated_features_indices = self.b_features_correlated[0].indices.tolist(),
-            correlated_features_pearson = self.b_features_correlated[0].values.tolist(),
-            correlated_features_l1 = self.b_features_correlated[1].tolist(),
+            **kwargs,
         )
         # Return both items (we'll be wrapping them in 'grid-item' later)
         return f"<div class='grid-item'>{html_str}</div>"
@@ -846,9 +855,9 @@ class BatchedCorrCoef:
         pearson, cossim = self.corrcoef()
         X, Y = cossim.shape
         # Get pearson topk by actually taking topk
-        pearson_topk = TopK(pearson.topk(dim=-1, k=k, largest=largest)) # shape (X, k)
+        pearson_topk = TopK(pearson, k, largest) # shape (X, k)
         # Get cossim topk by indexing into cossim with the indices of the pearson topk: cossim[X, pearson_indices[X, k]]
-        cossim_values = eindex(cossim.cpu().numpy(), pearson_topk.indices, "X [X k]")
+        cossim_values = utils.to_numpy(eindex(cossim, pearson_topk.indices, "X [X k]"))
         return pearson_topk, cossim_values
 
 

@@ -1,35 +1,34 @@
 import time
-import gc
 import numpy as np
-from pathlib import Path
 from typing import List
+import math
 import torch
-from torch import Tensor
+from torch import nn, Tensor
 from eindex import eindex
 from typing import Optional, List, Dict, Tuple, Union
 import torch.nn.functional as F
 import einops
 from jaxtyping import Float, Int
-from tqdm import tqdm
-from functools import partial
-import os
-from IPython.display import clear_output
-from dataclasses import dataclass
 from rich import print as rprint
 from rich.table import Table
-from transformer_lens import HookedTransformer
+from collections import defaultdict
+from transformer_lens import utils, HookedTransformer
+from tqdm.auto import tqdm
 
 Arr = np.ndarray
 
-from sae_vis.model_fns import AutoEncoder, DemoTransformer
+from sae_vis.model_fns import (
+    AutoEncoder,
+    TransformerLensWrapper,
+    to_resid_dir,
+)
 from sae_vis.utils_fns import (
     k_largest_indices,
     random_range_indices,
     create_vocab_dict,
     QuantileCalculator,
     TopK,
-    efficient_topk,
-    TransformerLensAdapter,
+    device,
 )
 from sae_vis.data_storing_fns import (
     FeatureVizParams,
@@ -46,22 +45,13 @@ from sae_vis.data_storing_fns import (
     MultiPromptData,
 )
 
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-elif torch.backends.mps.is_available():
-    device = torch.device("mps")
-else:
-    device = torch.device("cpu")
-
-
-
 
 
 
 
 
 def compute_feat_acts(
-    act_post: Float[Tensor, "batch seq d_mlp"],
+    model_acts: Float[Tensor, "batch seq d_in"],
     feature_idx: Int[Tensor, "feats"],
     encoder: AutoEncoder,
     encoder_B: Optional[AutoEncoder] = None,
@@ -73,9 +63,9 @@ def compute_feat_acts(
     coefficient objects, if they're given.
 
     Args:
-        act_post: Float[Tensor, "batch seq d_mlp"]
-            The neuron values post-activation function.
-        feature_act_dir: Float[Tensor, "d_mlp feats"]
+        model_acts: Float[Tensor, "batch seq d_in"]
+            The activations of the model, which the SAE was trained on.
+        feature_act_dir: Float[Tensor, "d_in feats"]
             The SAE's encoder weights for the feature(s) which we're interested in.
         feature_bias: Float[Tensor, "feats"]
             The bias of the encoder, which we add to the feature activations before ReLU'ing.
@@ -89,25 +79,25 @@ def compute_feat_acts(
             The object which stores the rolling correlation coefficients between feature activations & encoder-B features.
     '''
     # Get the feature act direction by indexing encoder.W_enc, and the bias by indexing encoder.b_enc
-    feature_act_dir = encoder.W_enc[:, feature_idx] # (d_mlp, feats)
+    feature_act_dir = encoder.W_enc[:, feature_idx] # (d_in, feats)
     feature_bias = encoder.b_enc[feature_idx] # (feats,)
 
     # Calculate & store the feature activations (we need to store them so we can get the right-hand visualisations later)
-    x_cent = act_post - encoder.b_dec
-    feat_acts_pre = einops.einsum(x_cent, feature_act_dir, "batch seq d_mlp, d_mlp feats -> batch seq feats")
+    x_cent = model_acts - encoder.b_dec
+    feat_acts_pre = einops.einsum(x_cent, feature_act_dir, "batch seq d_in, d_in feats -> batch seq feats")
     feat_acts = F.relu(feat_acts_pre + feature_bias)
 
     # Update the CorrCoef object between feature activation & neurons
     if corrcoef_neurons is not None:
         corrcoef_neurons.update(
             einops.rearrange(feat_acts, "batch seq feats -> feats (batch seq)"),
-            einops.rearrange(act_post, "batch seq d_mlp -> d_mlp (batch seq)"),
+            einops.rearrange(model_acts, "batch seq d_in -> d_in (batch seq)"),
         )
         
     # Calculate encoder-B feature activations (we don't need to store them, cause it's just for the left-hand visualisations)
-    if (encoder_B is not None) and (corrcoef_encoder_B is not None):
-        x_cent_B = act_post - encoder_B.b_dec
-        feat_acts_pre_B = einops.einsum(x_cent_B, encoder_B.W_enc, "batch seq d_mlp, d_mlp d_hidden -> batch seq d_hidden")
+    if corrcoef_encoder_B is not None:
+        x_cent_B = model_acts - encoder_B.b_dec
+        feat_acts_pre_B = einops.einsum(x_cent_B, encoder_B.W_enc, "batch seq d_in, d_in d_hidden -> batch seq d_hidden")
         feat_acts_B = F.relu(feat_acts_pre_B + encoder.b_enc)
 
         # Update the CorrCoef object between feature activation & encoder-B features
@@ -124,14 +114,13 @@ def compute_feat_acts(
 @torch.inference_mode()
 def _get_feature_data(
     encoder: AutoEncoder,
-    encoder_B: AutoEncoder,
-    model: Union[DemoTransformer, HookedTransformer],
+    encoder_B: Optional[AutoEncoder],
+    model: TransformerLensWrapper,
     tokens: Int[Tensor, "batch seq"],
     feature_indices: Union[int, List[int]],
     fvp: FeatureVizParams,
-    hook_point: Optional[str] = None,
-    hook_layer: Optional[int] = None,
-) -> MultiFeatureData:
+    progress_bars: Dict[str, tqdm],
+) -> Tuple[MultiFeatureData, Dict[str, float]]:
     '''
     Gets data that will be used to create the sequences in the feature-centric HTML visualisation.
     
@@ -142,27 +131,35 @@ def _get_feature_data(
     Args:
         encoder: AutoEncoder
             The encoder whose features we'll be analyzing.
+
         encoder_B: AutoEncoder
-            The encoder we'll be using as a reference (i.e. finding the B-features with the highest correlation).
-        model: Union[DemoTransformer, HookedTransformer]
-            The model we'll be using to get the feature activations.
-            This can either be a model which implements a `forward` method which returns (logits, residual, activations),
-            or it can be a HookedTransformer from TransformerLens.
+            The encoder we'll be using as a reference (i.e. finding the B-features with the highest correlation). This
+            is only necessary if we're generating the left-hand tables (i.e. fvp.include_left_tables=True).
+
+        model: TransformerLensWrapper
+            The model we'll be using to get the feature activations. It's a wrapping of the base TransformerLens model.
+
         tokens: Int[Tensor, "batch seq"]
-            The tokens we'll be using to get the feature activations. Note that we might not be using all of them; the
-            number used is determined by `fvp.total_batch_size`.
+            The tokens we'll be using to get the feature activations.
+
         feature_indices: Union[int, List[int]]
             The features we're actually computing. These might just be a subset of the model's full features.
-        fvp:
+
+        fvp: FeatureVizParams
             Feature visualization parameters, containing a bunch of other stuff. See the FeatureVizParams docstring for
             more information.
-        hook_point: Optional[str]
-            ONLY IF MODEL IS FROM TRANSFORMERLENS: The name of the hook point we'll be using to get the activations.
-        hook_layer: Optional[int]
-            ONLY IF MODEL IS FROM TRANSFORMERLENS: The layer of the hook point we'll be using to get the activations.
 
-    Returns object of class MultiFeatureData (i.e. containing data for creating each feature visualization, as well as
-    data for rank-ordering the feature visualizations when it comes time to make the prompt-centric view).
+        progress_bars: Dict[str, tqdm]
+            A dictionary containing the progress bars for the forward passes and the sequence data. This is used to
+            update the progress bars as the computation progresses.
+
+    Returns:
+        MultiFeatureData
+            Containing data for creating each feature visualization, as well as data for rank-ordering the feature
+            visualizations when it comes time to make the prompt-centric view (the `feature_act_quantiles` attribute).
+        time_log: Dict[str, float]
+            A dictionary containing the time taken for each step of the computation. This is optionally printed at the
+            end of the `get_feature_data` function, if `fvp.verbose` is set to True.
     '''
     # ! Boring setup code
 
@@ -172,57 +169,32 @@ def _get_feature_data(
     if isinstance(feature_indices, int): feature_indices = [feature_indices]
     n_feats = len(feature_indices)
 
-    # Chunk the tokens, for less memory usage
-    batch_size, seq_len = tokens.shape
-    tokens = tokens[:fvp.total_batch_size]
-    all_tokens = (tokens,) if fvp.minibatch_size is None else tokens.split(fvp.minibatch_size)
-    all_tokens = [tok.to(device) for tok in all_tokens]
-
     # Get the vocab dict, which we'll use at the end
     vocab_dict = create_vocab_dict(model.tokenizer)
 
-    # Helper function to create an iterator (if verbose we wrap it in a tqdm)
-    def create_iterator(iterator, desc: Optional[str] = None):
-        return tqdm(iterator, desc=desc, leave=False) if fvp.verbose else iterator
-    
-    # 
-    if fvp.include_left_tables == False:
-        encoder_B = None
-
-    # If the model is from TransformerLens, we need to wrap it in an adapter
-    # to make it look like a DemoTransformer;
-    if isinstance(model, HookedTransformer):
-        if hook_point is None or hook_layer is None:
-            raise ValueError("If the model is from TransformerLens, " +
-                             "you need to specify the hook point and layer.")
-        model = TransformerLensAdapter(model, hook_point, hook_layer)
-    else:
-        if hook_point is not None or hook_layer is not None:
-            raise ValueError("If the model is not from TransformerLens, you " +
-                             "can't specify a hook point or layer — you need " +
-                             "to change the forward method of your model to " +
-                             "return a different activation instead.")
-    
+    # Get tokens into minibatches, for the fwd pass
+    token_minibatches = (tokens,) if fvp.minibatch_size_tokens is None else tokens.split(fvp.minibatch_size_tokens)
+    token_minibatches = [tok.to(device) for tok in token_minibatches]
 
 
 
-    # ! Setup code (defining the main objects we'll eventually return)
+    # ! Data setup code (defining the main objects we'll eventually return)
 
     sequence_data_dict: Dict[int, SequenceMultiGroupData] = {}
     left_tables_data_dict: Dict[int, LeftTablesData] = {}
     middle_plots_data_dict: Dict[int, MiddlePlotsData] = {}
 
-    # Create tensors which we'll concatenate our data to, as we generate it
+    # Create lists to store the feature activations & final values of the residual stream
     all_resid_post = []
     all_feat_acts = []
 
-    # Create objects to store the rolling correlation coefficients
-    corrcoef_neurons = BatchedCorrCoef()
-    corrcoef_encoder_B = BatchedCorrCoef()
+    # Create objects to store the rolling correlation coefficients (for left tables)
+    corrcoef_neurons = BatchedCorrCoef() if fvp.include_left_tables else None
+    corrcoef_encoder_B = BatchedCorrCoef() if (fvp.include_left_tables and (encoder_B is not None)) else None
 
     # Get encoder & decoder directions
-    feature_out_dir = encoder.W_dec[feature_indices] # (feats, d_act) — d_act can eg. be d_mlp or d_model
-    feature_resid_dir = to_resid_dir(feature_out_dir, model) # (feats, d_model)
+    feature_out_dir = encoder.W_dec[feature_indices] # [feats d_autoencoder]
+    feature_resid_dir = to_resid_dir(feature_out_dir, model) # [feats d_model]
 
     t1 = time.time()
 
@@ -230,13 +202,14 @@ def _get_feature_data(
 
     # ! Compute & concatenate together all feature activations & post-activation function values
 
-    iterator = create_iterator(all_tokens, desc="Running forward passes")
-    
-    for _tokens in iterator:
-        residual, act_post = model(_tokens, return_logits=False)
-        feat_acts = compute_feat_acts(act_post, feature_indices, encoder, encoder_B, corrcoef_neurons, corrcoef_encoder_B)
+    for minibatch in token_minibatches:
+        residual, model_acts = model.forward(minibatch, return_logits=False)
+        feat_acts = compute_feat_acts(model_acts, feature_indices, encoder, encoder_B, corrcoef_neurons, corrcoef_encoder_B)
         all_feat_acts.append(feat_acts)
         all_resid_post.append(residual)
+        # prog.tasks[0].advance(1)
+        progress_bars["tokens"].update(1)
+
     all_feat_acts = torch.cat(all_feat_acts, dim=0)
     all_resid_post = torch.cat(all_resid_post, dim=0)
 
@@ -247,19 +220,26 @@ def _get_feature_data(
     # ! Calculate all data for the left-hand column visualisations, i.e. the 3 tables
 
     if fvp.include_left_tables:
+
         # Table 1: neuron alignment, based on decoder weights
-        top3_neurons_aligned = TopK(feature_out_dir.topk(dim=-1, k=fvp.rows_in_left_tables, largest=True))
-        pct_of_l1 = np.absolute(top3_neurons_aligned.values) / feature_out_dir.abs().sum(dim=-1, keepdim=True).cpu().numpy()
+        top3_neurons_aligned = TopK(feature_out_dir, k=fvp.rows_in_left_tables, largest=True)
+        pct_of_l1 = np.absolute(top3_neurons_aligned.values) / utils.to_numpy(feature_out_dir.abs().sum(dim=-1, keepdim=True))
+        
         # Table 2: neurons correlated with this feature, based on their activations
         pearson_topk_neurons, cossim_values_neurons = corrcoef_neurons.topk_pearson(k=fvp.rows_in_left_tables)
+        
         # Table 3: encoder-B features correlated with this feature, based on their activations
-        pearson_topk_encoderB, cossim_values_encoderB = corrcoef_encoder_B.topk_pearson(k=fvp.rows_in_left_tables)
+        b_features_correlated = [None] * len(feature_indices)
+        if corrcoef_encoder_B is not None:
+            pearson_topk_encoderB, cossim_values_encoderB = corrcoef_encoder_B.topk_pearson(k=fvp.rows_in_left_tables)
+            b_features_correlated = list(zip(pearson_topk_encoderB, cossim_values_encoderB))
+        
         # Add all this data to the list of LeftTablesData objects
         for i, feat in enumerate(feature_indices):
             left_tables_data_dict[feat] = LeftTablesData(
                 neuron_alignment = (top3_neurons_aligned[i], pct_of_l1[i]),
                 neurons_correlated = (pearson_topk_neurons[i], cossim_values_neurons[i]),
-                b_features_correlated = (pearson_topk_encoderB[i], cossim_values_encoderB[i]),
+                b_features_correlated = b_features_correlated[i],
             )
     else:
         left_tables_data_dict = {feat: None for feat in feature_indices}
@@ -270,9 +250,7 @@ def _get_feature_data(
 
     # ! Calculate all data for the right-hand visualisations, i.e. the sequences
 
-    iterator = create_iterator(list(enumerate(feature_indices)), desc="Getting sequence data")
-
-    for i, feat in iterator:
+    for i, feat in enumerate(feature_indices):
 
         # Add this feature's sequence data to the list
         sequence_data_dict[feat] = get_sequences_data(
@@ -283,6 +261,7 @@ def _get_feature_data(
             W_U = model.W_U,
             fvp = fvp,
         )
+        progress_bars["feats"].update(1)
 
     t4 = time.time()
     
@@ -292,13 +271,12 @@ def _get_feature_data(
     # Get the logits of all features (i.e. the directions this feature writes to the logit output)
     logits = einops.einsum(feature_resid_dir, model.W_U, "feats d_model, d_model d_vocab -> feats d_vocab")
 
-    for i, feat in enumerate(feature_indices):
-        _logits = logits[i]
+    for i, (feat, logit) in enumerate(zip(feature_indices, logits)):
 
         # Get data for logits (the histogram, and the table)
-        logits_histogram_data = HistogramData(_logits, n_bins=40, tickmode="5 ticks")
-        bottom10_logits = TopK(_logits.topk(k=10, largest=False))
-        top10_logits = TopK(_logits.topk(k=10))
+        logits_histogram_data = HistogramData(logit, n_bins=40, tickmode="5 ticks")
+        top10_logits = TopK(logit, k=10, largest=True)
+        bottom10_logits = TopK(logit, k=10, largest=False)
 
         # Get data for feature activations histogram (the title, and the histogram)
         feat_acts = all_feat_acts[..., i]
@@ -333,30 +311,21 @@ def _get_feature_data(
         )
         for feat in feature_indices
     }
+
+    # Also get the quantiles, which will be useful for the prompt-centric visualisation
     feature_act_quantiles = QuantileCalculator(data=einops.rearrange(all_feat_acts, "b s feats -> feats (b s)"))
 
     t6 = time.time()
 
+    time_logs = {
+        "Forward passes to gather data": t2 - t1,
+        "Getting data for left tables": t3 - t2,
+        "Getting data for middle histograms": t5 - t4,
+        "Getting data for right sequences": t4 - t3,
+        "Other": (t1 - t0) + (t6 - t5),
+    }
 
-
-    # ! If verbose, try to estimate time it will take to generate data for all features, plus storage space
-
-    if fvp.verbose:
-        n_feats_total = encoder.cfg.dict_mult * encoder.cfg.d_mlp
-        total_time = t6 - t0
-        table = Table("Task", "Time", "Pct %")
-        for task, _time in zip(
-            ["Setup code", "Fwd passes", "Left-hand tables", "Right-hand sequences", "Middle column", "Creating dict"],
-            [t1-t0, t2-t1, t3-t2, t4-t3, t5-t4]
-        ):
-            frac = _time / total_time
-            table.add_row(task, f"{_time:.2f}s", f"{frac:.1%}")
-        rprint(table)
-        est = ((t2 - t0) + (n_feats_total / n_feats) * (t6 - t2) / 60)
-        print(f"Estimated time for all {n_feats_total} features = {est:.0f} minutes\n")
-
-
-    return MultiFeatureData(feature_data, feature_act_quantiles)
+    return MultiFeatureData(feature_data, feature_act_quantiles), time_logs
 
 
 
@@ -364,12 +333,10 @@ def _get_feature_data(
 @torch.inference_mode()
 def get_feature_data(
     encoder: AutoEncoder,
-    encoder_B: AutoEncoder,
-    model: DemoTransformer,
+    model: HookedTransformer,
     tokens: Int[Tensor, "batch seq"],
     fvp: FeatureVizParams,
-    hook_point: Optional[str] = None,
-    hook_layer: Optional[int] = None,
+    encoder_B: Optional[AutoEncoder] = None,
 ) -> MultiFeatureData:
     '''
     This is the main function which users will run to generate the feature visualization data. It batches this
@@ -381,21 +348,44 @@ def get_feature_data(
     '''
     # Create objects to store all the data we'll get from `_get_feature_data`
     feature_data = MultiFeatureData()
+    time_logs = defaultdict(float)
 
     # Get a feature list (need to deal with the case where `fvp.features` is an int, or None)
     if fvp.features is None:
         features_list = list(range(encoder.cfg.d_hidden))
     elif isinstance(fvp.features, int):
-        features_list = list(range(fvp.features))
+        features_list = [fvp.features]
     else:
         features_list = list(fvp.features)
 
-    # Break up the features into batches, and get data for each feature batch at once
-    feature_indices_batches = [x.tolist() for x in torch.tensor(features_list).split(fvp.minibatch_size_features)]
-    for feature_indices in feature_indices_batches:
-        new_feature_data = _get_feature_data(encoder, encoder_B, model, tokens,
-                                             feature_indices, fvp, hook_point, hook_layer)
+    # Break up the features into batches
+    feature_batches = [x.tolist() for x in torch.tensor(features_list).split(fvp.minibatch_size_features)]
+    # Calculate how many minibatches of tokens there will be (for the progress bar)
+    n_token_batches = 1 if (fvp.minibatch_size_tokens is None) else math.ceil(len(tokens) / fvp.minibatch_size_tokens)
+
+    # Add two progress bars (one for the forward passes, one for getting the sequence data)
+    progress_bar_tokens = tqdm(total=n_token_batches*len(feature_batches), desc="Forward passes to gather data")
+    progress_bar_feats = tqdm(total=len(features_list), desc="Getting sequence data")
+    progress_bars = {"tokens": progress_bar_tokens, "feats": progress_bar_feats}
+
+    # If the model is from TransformerLens, we need to apply a wrapper to it for standardization
+    assert isinstance(model, HookedTransformer), "Error: non-HookedTransformer models are not yet supported."
+    model = TransformerLensWrapper(model, fvp.hook_point)
+
+    # For each feat: get new data and update global data storage objects
+    for features in feature_batches:
+        new_feature_data, new_time_logs = _get_feature_data(encoder, encoder_B, model, tokens, features, fvp, progress_bars)
         feature_data.update(new_feature_data)
+        for key, value in new_time_logs.items():
+            time_logs[key] += value
+
+    # If verbose, then print the output
+    if fvp.verbose:
+        total_time = sum(time_logs.values())
+        table = Table("Task", "Time", "Pct %")
+        for task, duration in time_logs.items():
+            table.add_row(task, f"{duration:.2f}s", f"{duration/total_time:.1%}")
+        rprint(table)
 
     return feature_data
 
@@ -459,40 +449,35 @@ def get_sequences_data(
 
     # ! (2) & (3) Calculate the loss effect, and the most-affected logits
 
-    # For each token index [batch, seq], we actually want [[batch, seq-buffer[0]], ..., [batch, seq], ..., [batch, seq+buffer[1]]]
+    # For each token index [group, seq], we want the seqpos slice [[group, seq-buffer[0]], ..., [group, seq+buffer[1]]]
     # We get one extra dimension at the start, because we need to see the effect on loss of the first token
     buffer_tensor = torch.arange(-fvp.buffer[0] - 1, fvp.buffer[1] + 1, device=indices_full.device)
-    indices_full = einops.repeat(indices_full, "g two -> g buf two", buf=fvp.buffer[0] + fvp.buffer[1] + 2)
+    indices_full = einops.repeat(indices_full, "batch two -> batch seq two", seq=fvp.buffer[0] + fvp.buffer[1] + 2)
     indices_full = torch.stack([indices_full[..., 0], indices_full[..., 1] + buffer_tensor], dim=-1)
+    indices_batch, indices_seq = indices_full.unbind(dim=-1)
 
-    # Use `eindex` for some delicate indexing operations, getting the data for each chosen sequence of tokens in each group
-    tokens_group = eindex(tokens, indices_full[:, 1:], "[g buf 0] [g buf 1]") # [g buf]
-    feat_acts_group = eindex(feat_acts, indices_full, "[g buf 0] [g buf 1]")
-    resid_post_group: torch.Tensor = eindex(resid_post, indices_full, "[g buf 0] [g buf 1] d_model")
+    # Use indices_full to get the feature activations & resid post values for the sequences in question
+    feat_acts_group = feat_acts[indices_batch, indices_seq]
+    resid_post_group = resid_post[indices_batch, indices_seq]
 
     # Get this feature's output vector, using an outer product over the feature activations for all tokens
-    resid_post_feature_effect = einops.einsum(feat_acts_group, feature_resid_dir, "g buf, d_model -> g buf d_model")
+    resid_post_feature_effect = einops.einsum(feat_acts_group, feature_resid_dir, "group buf, d_model -> group buf d_model")
 
     # Get new ablated logits, and old ones
     new_resid_post = resid_post_group - resid_post_feature_effect
     new_logits = (new_resid_post / new_resid_post.std(dim=-1, keepdim=True)) @ W_U
     orig_logits = (resid_post_group / resid_post_group.std(dim=-1, keepdim=True)) @ W_U
 
-    # Get the top5 & bottom5 changes in logits (using `efficient_topk` which saves time by ignoring tokens where feat_act=0)
+    # Get the top5 & bottom5 changes in logits
+    # Note, we use TopK's efficient function which takes in a mask, and ignores tokens where all feature acts are zero
     contribution_to_logprobs = orig_logits.log_softmax(dim=-1) - new_logits.log_softmax(dim=-1)
-    acts_nonzero = feat_acts_group[:, :-1].abs() > 1e-5 # [g buf]
+    acts_nonzero = feat_acts_group[:, :-1].abs() > 1e-5 # [group buf]
+    top5_contribution_to_logits = TopK(contribution_to_logprobs[:, :-1], k=5, largest=True, tensor_mask=acts_nonzero)
+    bottom5_contribution_to_logits = TopK(contribution_to_logprobs[:, :-1], k=5, largest=False, tensor_mask=acts_nonzero)
 
-    # Edge case handling — if the feature never fired, raise an error
-    if not acts_nonzero.any():
-        empty_tok_k = torch.zeros(*acts_nonzero.shape, 5)
-        top5_contribution_to_logits = TopK((empty_tok_k, empty_tok_k))
-        bottom5_contribution_to_logits = TopK((empty_tok_k, empty_tok_k))
-    else:
-        top5_contribution_to_logits = efficient_topk(contribution_to_logprobs[:, :-1], acts_nonzero, k=5, largest=True)
-        bottom5_contribution_to_logits = efficient_topk(contribution_to_logprobs[:, :-1], acts_nonzero, k=5, largest=False)
-
-    # Get the change in loss (which is negative of change of logprobs for correct token)
-    contribution_to_loss = eindex(-contribution_to_logprobs[:, :-1], tokens_group, "g buf [g buf]")
+    # Get the change in loss (which is negative of change of logprobs for correct tokens)
+    token_ids = tokens[indices_batch[:, 1:], indices_seq[:, 1:]] # [group seq-1]
+    contribution_to_loss = eindex(-contribution_to_logprobs[:, :-1], token_ids, "group buf [group buf]")
 
 
     # ! (4) Store the results in a SequenceMultiGroupData object
@@ -503,7 +488,7 @@ def get_sequences_data(
     for group_idx, group_name in enumerate(indices_dict.keys()):
         seq_data = [
             SequenceData(
-                token_ids = tokens_group[i].tolist(),
+                token_ids = token_ids[i].tolist(),
                 feat_acts = feat_acts_group[i, 1:].tolist(),
                 contribution_to_loss = contribution_to_loss[i].tolist(),
                 top5_token_ids = top5_contribution_to_logits.indices[i].tolist(),
@@ -524,11 +509,11 @@ def get_sequences_data(
 @torch.inference_mode()
 def get_prompt_data(
     encoder: AutoEncoder,
-    model: DemoTransformer,
+    model: HookedTransformer,
     prompt: str,
     feature_data: MultiFeatureData,
-    num_top_features: int,
-    verbose: bool = False,
+    fvp: FeatureVizParams,
+    num_top_features: int = 10,
 ) -> MultiPromptData:
     '''
     Gets data that will be used to create the sequences in the prompt-centric HTML visualisation.
@@ -536,16 +521,18 @@ def get_prompt_data(
     Args:
         encoder: AutoEncoder
             The encoder whose features we'll be analyzing.
-        model: DemoTransformer
-            The model we'll be using to get the feature activations.
+        model: HookedTransformer
+            The model we'll be using to get the feature activations. It'll be wrapped in a TransformerLensWrapper.
         tokens: Int[Tensor, "batch seq"]
             The tokens we'll be using to get the feature activations. Note that we might not be using all of them; the
             number used is determined by `fvp.total_batch_size`.
         feature_indices: Union[int, List[int]]
             The features we're actually computing. These might just be a subset of the model's full features.
-        fvp:
+        fvp: FeatureVizParams
             Feature visualization parameters, containing a bunch of other stuff. See the FeatureVizParams docstring for
             more information.
+        num_top_features: int
+            The number of top features to display in this view, for any given metric.
 
     Returns object of class MultiFeatureData (i.e. containing data for creating each feature visualization, as well as
     data for rank-ordering the feature visualizations when it comes time to make the prompt-centric view).
@@ -570,15 +557,16 @@ def get_prompt_data(
     tokens: torch.Tensor = model.tokenizer.encode(prompt, return_tensors="pt").to(device)
     batch, seq_len = tokens.shape
 
-    def create_iterator(iterator, desc: Optional[str] = None):
-        return tqdm(iterator, desc=desc, leave=False) if verbose else iterator
-
     sequence_data_dict: Dict[int, SequenceData] = {}
 
-    feature_act_dir = encoder.W_enc[:, feature_idx] # [d_mlp feats]
-    feature_out_dir = encoder.W_dec[feature_idx] # [feats d_mlp]
+    # If the model is from TransformerLens, we need to apply a wrapper to it for standardization
+    assert isinstance(model, HookedTransformer), "Error: non-HookedTransformer models are not yet supported."
+    model = TransformerLensWrapper(model, fvp.hook_point)
+
+    feature_act_dir = encoder.W_enc[:, feature_idx] # [d_in feats]
+    feature_out_dir = encoder.W_dec[feature_idx] # [feats d_in]
     feature_resid_dir = to_resid_dir(feature_out_dir, model) # [feats d_model]
-    assert feature_act_dir.T.shape == feature_out_dir.shape == (len(feature_idx), encoder.cfg.d_mlp)
+    assert feature_act_dir.T.shape == feature_out_dir.shape == (len(feature_idx), encoder.cfg.d_in)
 
     # ! Define hook functions to cache all the info required for feature ablation, then run those hook fns
 
@@ -592,9 +580,9 @@ def get_prompt_data(
     correct_token_unembeddings = model.W_U[:, tokens[0, 1:]] # [d_model seq]
     orig_logits = (resid_post / resid_post.std(dim=-1, keepdim=True)) @ model.W_U # [seq d_vocab]
 
-    iterator = create_iterator(list(enumerate(feature_idx)))
+    print("Put rich progress bar here!")
 
-    for i, feat in iterator:
+    for i, feat in enumerate(feature_idx):
 
         # ! Calculate all data for the sequences (this is the only truly 'new' bit of calculation we need to do)
 
@@ -607,8 +595,8 @@ def get_prompt_data(
 
         # Get the top5 & bottom5 changes in logits (don't bother with `efficient_topk` cause it's small)
         contribution_to_logprobs = orig_logits.log_softmax(dim=-1) - new_logits.log_softmax(dim=-1)
-        top5_contribution_to_logits = TopK(contribution_to_logprobs[:-1].topk(k=5, dim=-1))
-        bottom5_contribution_to_logits = TopK(contribution_to_logprobs[:-1].topk(k=5, dim=-1, largest=False))
+        top5_contribution_to_logits = TopK(contribution_to_logprobs[:-1], k=5)
+        bottom5_contribution_to_logits = TopK(contribution_to_logprobs[:-1], k=5, largest=False)
 
         # Get the change in loss (which is negative of change of logprobs for correct token)
         contribution_to_loss = eindex(-contribution_to_logprobs[:-1], tokens[0, 1:], "seq [seq]")
@@ -646,12 +634,12 @@ def get_prompt_data(
     # ! Lastly, use the 3 possible criteria (act size, act quantile, loss effect) to find all the top-scoring features
 
     # Construct a scores dict, which maps from things like ("act_quantile", seq_pos) to a list of the top-scoring features
-    scores_dict: Dict[Tuple[str, str], TopK] = {}
+    scores_dict: Dict[Tuple[str, str], Tuple[TopK, List[str]]] = {}
 
     for seq_pos, str_tok in enumerate(str_toks):
 
         # Filter the feature activations, since we only need the ones that are non-zero
-        feat_acts_nonzero_filter = (feat_acts[seq_pos] > 0).detach().cpu().numpy()
+        feat_acts_nonzero_filter = utils.to_numpy(feat_acts[seq_pos] > 0)
         feat_acts_nonzero_locations = np.nonzero(feat_acts_nonzero_filter)[0].tolist()
         _feat_acts = feat_acts[seq_pos, feat_acts_nonzero_filter] # [feats_filtered,]
         _feature_idx = np.array(feature_idx)[feat_acts_nonzero_filter]
@@ -660,14 +648,14 @@ def get_prompt_data(
             k = min(num_top_features, _feat_acts.numel())
             
             # Get the "act_size" scores (we return it as a TopK object)
-            act_size_topk = TopK(_feat_acts.topk(k=k, largest=True))
+            act_size_topk = TopK(_feat_acts, k=k, largest=True)
             # Replace the indices with feature indices (these are different when feature_idx argument is not [0, 1, 2, ...])
             act_size_topk.indices[:] = _feature_idx[act_size_topk.indices]
             scores_dict[("act_size", seq_pos)] = (act_size_topk, ".3f")
 
             # Get the "act_quantile" scores, which is just the fraction of cached feat acts that it is larger than
             act_quantile, act_precision = feature_data.feature_act_quantiles.get_quantile(_feat_acts, feat_acts_nonzero_locations)
-            act_quantile_topk = TopK(act_quantile.topk(k=k, largest=True, dim=-1))
+            act_quantile_topk = TopK(act_quantile, k=k, largest=True)
             act_formatting_topk = [f".{act_precision[i]-2}%" for i in act_quantile_topk.indices]
             # Replace the indices with feature indices (these are different when feature_idx argument is not [0, 1, 2, ...])
             act_quantile_topk.indices[:] = _feature_idx[act_quantile_topk.indices]
@@ -678,7 +666,7 @@ def get_prompt_data(
             continue
         
         # Filter the loss effects, since we only need the ones which have non-zero feature acts on the tokens before them
-        prev_feat_acts_nonzero_filter = (feat_acts[seq_pos - 1] > 0).detach().cpu().numpy()
+        prev_feat_acts_nonzero_filter = utils.to_numpy((feat_acts[seq_pos - 1] > 0))
         _contribution_to_loss = feats_contribution_to_loss[prev_feat_acts_nonzero_filter, seq_pos-1] # [feats_filtered,]
         _feature_idx_prev = np.array(feature_idx)[prev_feat_acts_nonzero_filter]
 
@@ -687,7 +675,7 @@ def get_prompt_data(
 
             # Get the "loss_effect" scores, which are just the min of features' contributions to loss (min because we're
             # looking for helpful features, not harmful ones)
-            contribution_to_loss_topk = TopK(_contribution_to_loss.topk(k=k, largest=False))
+            contribution_to_loss_topk = TopK(_contribution_to_loss, k=k, largest=False)
             # Replace the indices with feature indices (these are different when feature_idx argument is not [0, 1, 2, ...])
             contribution_to_loss_topk.indices[:] = _feature_idx_prev[contribution_to_loss_topk.indices]
             scores_dict[("loss_effect", seq_pos)] = (contribution_to_loss_topk, ".3f")

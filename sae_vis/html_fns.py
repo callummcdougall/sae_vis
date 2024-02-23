@@ -210,11 +210,15 @@ def generate_left_tables_html(
     correlated_neurons_indices: List[int],
     correlated_neurons_pearson: List[float],
     correlated_neurons_l1: List[float],
-    correlated_features_indices: List[int],
-    correlated_features_pearson: List[float],
-    correlated_features_l1: List[float],
+    correlated_features_indices: Optional[List[int]] = None,
+    correlated_features_pearson: Optional[List[float]] = None,
+    correlated_features_l1: Optional[List[float]] = None,
 ):
     html_output = HTML_LEFT_TABLES
+
+    # If we don't have the correlated features from encoder_B, remove that table
+    if correlated_features_indices is None:
+        html_output = re.sub(r'<h4>CORRELATED FEATURES \(B-ENCODER\)</h4>.*?</table>', "", html_output, flags=re.DOTALL)
 
     for (letter, mylist, myformat) in zip(
         "IVLIPCIPC",
@@ -231,11 +235,20 @@ def generate_left_tables_html(
         ],
         [None, "+.2f", ".1%", None, "+.2f", "+.2f", None, "+.2f", "+.2f"]
     ):
+        if mylist is None: 
+            continue
         fn = lambda m: str(mylist[int(m.group(1))]) if myformat is None else format(mylist[int(m.group(1))], myformat)
         html_output = re.sub(letter + "(\d)", fn, html_output, count=3)
     
     return html_output
     
+
+
+# def format_list(mylist: List[float], fmt: str) -> str:
+#     '''
+#     Formats a list of floats as a string, with a given format.
+#     '''
+#     return ", ".join([format(x, fmt) for x in mylist])
 
 
 
