@@ -199,4 +199,3 @@ def to_resid_dir(dir: Float[Tensor, "feats d_in"], model: TransformerLensWrapper
     # Others not yet supported
     else:
         raise NotImplementedError("The hook your SAE was trained on isn't yet supported")
-
