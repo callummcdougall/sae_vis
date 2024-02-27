@@ -35,7 +35,7 @@ Here is a summary of each of the important files in this repository, as well as 
 If you just want to run the code and don't care as much about how it works, I recommend you stop reading here, and instead go to the [Colab](https://colab.research.google.com/drive/1rEHvywBZdnkHoie6YW88DxrHN1wnqhlF?usp=sharing).
 
 ```
-sae-viz
+sae-vis
 │
 ├── css
 │   ├── general.css
@@ -98,13 +98,13 @@ Many of these classes have a `get_html` method, which is called recursively by t
 
 Here is an illustration of all the dataclasses we use, which also shows why it's handy to make these classes modular and hierarchical:
 
-<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-viz-dataclass-hierarchy-1.png" width="1000">
+<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-vis-dataclass-hierarchy-1.png" width="1000">
 
 Not illustrated is the class `MultiFeatureData`, which contains several `FeatureData` objects as well as information which is used to calculate the quantiles for the prompt-centric visualisation.
 
 There is also a different high-level object `MultiPromptData`, which is designed to (for a single user-given input prompt) show a set of features which score very highly in some metric in this particular prompt (e.g. the features are sorted by activation on the final token in this prompt). This has a different hierarchical structure, but still with a lot of overlap:
 
-<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-viz-dataclass-hierarchy-2.png" width="700">
+<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-vis-dataclass-hierarchy-2.png" width="700">
 
 ### `html_fns.py`
 

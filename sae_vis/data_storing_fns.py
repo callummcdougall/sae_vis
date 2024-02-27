@@ -57,7 +57,7 @@ can be very noisy when the number of features is small).",
 
 
 @dataclass
-class FeatureVizParams:
+class FeatureVisParams:
 
     hook_point: Optional[str] = None
 
@@ -79,8 +79,8 @@ class FeatureVizParams:
         '''
         Prints out the values & meanings of all the parameters. Also highlights when they're different to default.
         '''
-        default_fvp = FeatureVizParams()
-        table = Table("Parameter", "Value", "Meaning", title="FeatureVizParams", show_lines=True)
+        default_fvp = FeatureVisParams()
+        table = Table("Parameter", "Value", "Meaning", title="FeatureVisParams", show_lines=True)
         for param, meaning in FEATURE_VIZ_PARAMS.items():
             value = str(getattr(self, param))
             default_value = str(getattr(default_fvp, param))
@@ -679,7 +679,7 @@ class FeatureData:
         vocab_dict: Dict[int, str]
             Used for the string tokens in the sequence visualisations.
 
-        fvp: FeatureVizParams
+        fvp: FeatureVisParams
             Contains several other parameters which are important in the visualisation.
     '''
     sequence_data: SequenceMultiGroupData
@@ -688,7 +688,7 @@ class FeatureData:
 
     feature_idx: int
     vocab_dict: Dict[int, str]
-    fvp: FeatureVizParams
+    fvp: FeatureVisParams
 
     def get_html(
         self,

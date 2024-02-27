@@ -31,7 +31,7 @@ from sae_vis.utils_fns import (
     device,
 )
 from sae_vis.data_storing_fns import (
-    FeatureVizParams,
+    FeatureVisParams,
     BatchedCorrCoef,
     SequenceData,
     SequenceGroupData,
@@ -118,7 +118,7 @@ def _get_feature_data(
     model: TransformerLensWrapper,
     tokens: Int[Tensor, "batch seq"],
     feature_indices: Union[int, List[int]],
-    fvp: FeatureVizParams,
+    fvp: FeatureVisParams,
     progress_bars: Dict[str, tqdm],
 ) -> Tuple[MultiFeatureData, Dict[str, float]]:
     '''
@@ -126,7 +126,7 @@ def _get_feature_data(
     
     Note - this function isn't called directly by the user, it actually gets called by the `get_feature_data` function
     which does exactly the same thing except it also batches this computation by features (in accordance with the
-    arguments `features` and `minibatch_size_features` from the FeatureVizParams object).
+    arguments `features` and `minibatch_size_features` from the FeatureVisParams object).
 
     Args:
         encoder: AutoEncoder
@@ -145,8 +145,8 @@ def _get_feature_data(
         feature_indices: Union[int, List[int]]
             The features we're actually computing. These might just be a subset of the model's full features.
 
-        fvp: FeatureVizParams
-            Feature visualization parameters, containing a bunch of other stuff. See the FeatureVizParams docstring for
+        fvp: FeatureVisParams
+            Feature visualization parameters, containing a bunch of other stuff. See the FeatureVisParams docstring for
             more information.
 
         progress_bars: Dict[str, tqdm]
@@ -335,12 +335,12 @@ def get_feature_data(
     encoder: AutoEncoder,
     model: HookedTransformer,
     tokens: Int[Tensor, "batch seq"],
-    fvp: FeatureVizParams,
+    fvp: FeatureVisParams,
     encoder_B: Optional[AutoEncoder] = None,
 ) -> MultiFeatureData:
     '''
     This is the main function which users will run to generate the feature visualization data. It batches this
-    computation over features, in accordance with the arguments in the FeatureVizParams object (we don't want to
+    computation over features, in accordance with the arguments in the FeatureVisParams object (we don't want to
     compute all the features at once, since might be too memory-intensive).
 
     See the `_get_feature_data` function for an explanation of the arguments, as well as a more detailed explanation
@@ -399,7 +399,7 @@ def get_sequences_data(
     resid_post: Float[Tensor, "batch seq d_model"],
     feature_resid_dir: Float[Tensor, "d_model"],
     W_U: Float[Tensor, "d_model d_vocab"],
-    fvp: FeatureVizParams,
+    fvp: FeatureVisParams,
 ) -> SequenceMultiGroupData:
     '''
     This function returns the data which is used to create the sequence visualizations (i.e. the right-hand column of
@@ -512,7 +512,7 @@ def get_prompt_data(
     model: HookedTransformer,
     prompt: str,
     feature_data: MultiFeatureData,
-    fvp: FeatureVizParams,
+    fvp: FeatureVisParams,
     num_top_features: int = 10,
 ) -> MultiPromptData:
     '''
@@ -528,8 +528,8 @@ def get_prompt_data(
             number used is determined by `fvp.total_batch_size`.
         feature_indices: Union[int, List[int]]
             The features we're actually computing. These might just be a subset of the model's full features.
-        fvp: FeatureVizParams
-            Feature visualization parameters, containing a bunch of other stuff. See the FeatureVizParams docstring for
+        fvp: FeatureVisParams
+            Feature visualization parameters, containing a bunch of other stuff. See the FeatureVisParams docstring for
             more information.
         num_top_features: int
             The number of top features to display in this view, for any given metric.
