@@ -222,7 +222,7 @@ class TopK:
         case, we don't want to waste time taking topk over a tensor of zeros.
         '''
         # If no tensor mask is provided, then we just return the topk values and indices
-        if tensor_mask is None:
+        if tensor_mask is None or not tensor_mask.any():
             topk = tensor.topk(k=self.k, largest=self.largest)
             return utils.to_numpy(topk.values), utils.to_numpy(topk.indices)
 
