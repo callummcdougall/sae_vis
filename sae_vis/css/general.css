@@ -15,21 +15,23 @@
     /* padding-right: 100px; */
     /* width: max-content; */
 }
-.grid-container::-webkit-scrollbar {
+::-webkit-scrollbar {
     height: 10px; /* Height of the scrollbar */
+    width: 10px; /* Weight of the scrollbar */
 }
-.grid-container::-webkit-scrollbar-track {
+::-webkit-scrollbar-track {
     background: #f1f1f1; /* Color of the track */
 }
-.grid-container::-webkit-scrollbar-thumb {
+::-webkit-scrollbar-thumb {
     background: #999; /* Color of the scrollbar thumb */
 }
-.grid-container::-webkit-scrollbar-thumb:hover {
+::-webkit-scrollbar-thumb:hover {
     background: #555; /* Color when hovered */
 }
 .grid-item {
     margin-left: 35px;
     width: max-content;
+    overflow-y: auto;
 }
 code {
     all: unset;

@@ -26,7 +26,7 @@ def get_device() -> torch.device:
 
 device = get_device()
 
-Arr = np.ndarray
+Arr = np.ndarray 
 
 MAIN = __name__ == "__main__"
 

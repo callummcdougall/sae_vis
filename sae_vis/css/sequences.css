@@ -17,19 +17,7 @@ code {
     overflow-y: visible;
     padding-top: 5px;
     padding-bottom: 10px;
-    margin-bottom: 10px;
-}
-.seq-scroll::-webkit-scrollbar {
-    height: 10px; /* Height of the scrollbar */
-}
-.seq-scroll::-webkit-scrollbar-track {
-    background: #f1f1f1; /* Color of the track */
-}
-.seq-scroll::-webkit-scrollbar-thumb {
-    background: #999; /* Color of the scrollbar thumb */
-}
-.seq-scroll::-webkit-scrollbar-thumb:hover {
-    background: #555; /* Color when hovered */
+    /* margin-bottom: 10px; */
 }
 
 .token {

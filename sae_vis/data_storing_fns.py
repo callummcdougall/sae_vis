@@ -29,6 +29,7 @@ from sae_vis.html_fns import (
     CSS,
     JS_HOVERTEXT_SCRIPT,
     adjust_hovertext,
+    grid_item,
 )
 
 
@@ -51,6 +52,10 @@ buffer positions.",
     "first_group_size": "Number of sequences in the top-k group.",
     "other_groups_size": "Number of sequences in each of the quantile groups.",
     "border": "Whether to include the shadow border around the main visualization.",
+    "seq_width": "The max width of the sequences in the main visualization. If None, they'll be full-width (to contain \
+the longest seq).",
+    "seq_height": "The max height of the sequences in the main visualization. If None, they'll be full-height (to contain \
+all the sequences).",
     "verbose": "Whether to print out the time taken for each task, and the estimated time for all features (note, this \
 can be very noisy when the number of features is small).",
 }
@@ -71,7 +76,10 @@ class FeatureVisParams:
     n_groups: int = 10
     first_group_size: int = 20
     other_groups_size: int = 5
+
     border: bool = True
+    seq_width: Optional[int] = 420
+    seq_height: Optional[int] = None
 
     verbose: bool = True
 
@@ -197,13 +205,13 @@ class SequenceData:
     bottom5_token_ids: Optional[List[List[str]]] = None
     bottom5_logit_contributions: Optional[List[List[float]]] = None
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.token_ids)
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"SequenceData({''.join(self.token_ids)})"
     
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         '''Filters down the data, by deleting the "on hover" information if the activations are zero.'''
         self.top5_logit_contributions, self.top5_token_ids = self._filter(self.top5_logit_contributions, self.top5_token_ids)
         self.bottom5_logit_contributions, self.bottom5_token_ids = self._filter(self.bottom5_logit_contributions, self.bottom5_token_ids)
@@ -221,6 +229,7 @@ class SequenceData:
         hovertext: bool = True,
         bold_idx: Optional[int] = None,
         overflow_x: Literal["break", None] = None,
+        max_act_color: Optional[int] = None,
     ) -> str:
         '''
         hovertext determines whether we add hovertext to this HTML (yes if the sequence is on its own, no otherwise).
@@ -236,6 +245,7 @@ class SequenceData:
             pos_val = self.top5_logit_contributions,
             neg_val = self.bottom5_logit_contributions,
             overflow_x = overflow_x,
+            max_act_color = max_act_color,
         )
         if hovertext:
             html_str += f"<script>{JS_HOVERTEXT_SCRIPT}</script>"
@@ -252,8 +262,8 @@ class SequenceGroupData:
     so see the SequenceData class for more information.
     '''
     def __init__(self, title: str, seq_data: List[SequenceData]):
-        self.title = title
-        self.seq_data = seq_data
+        self.title: str = title
+        self.seq_data: list[SequenceData] = seq_data
     
     def __len__(self) -> int:
         return len(self.seq_data)
@@ -265,6 +275,8 @@ class SequenceGroupData:
         hovertext: bool = True,
         overflow_x: Literal["scroll", "hidden"] = "scroll",
         width: Optional[int] = 420,
+        max_act_color: Optional[float] = None,
+        margin: bool = True,
     ):
         '''
         This creates a single group of sequences, i.e. title plus some number of vertically stacked sequences.
@@ -285,14 +297,17 @@ class SequenceGroupData:
                 If not None, then the sequence data will be wrapped in a div with this width. If None, then the
                 sequences will be full-length (i.e. each column containing sequences will have variable width, to match
                 the sequences).
+            max_act_color: Optional[float]
+                If supplied, then we use this as the most extreme value, for coloring the tokens by activation value.
         '''
-        style = "" if width is None else f"style='width:{width}px;'"
-        html_str = f'<h4>{self.title}</h4><div class="seq-{overflow_x}" {style}>'
+        width_style: str = "" if width is None else f"width:{width}px;"
+        margin_style: str = f"margin-bottom:{10 if margin else 0}px;"
+        html_str: str = f'<h4>{self.title}</h4><div class="seq-{overflow_x}" style="{width_style}{margin_style}">'
         
-        seqs = self.seq_data if group_size is None else self.seq_data[:group_size]
+        seqs: list[SequenceData] = self.seq_data if group_size is None else self.seq_data[:group_size]
         for seq in seqs:
             # We return the HTML for seq without hovertext JavaScript (cause we only need to do hovertext once)
-            html_str += seq.get_html(vocab_dict=vocab_dict, hovertext=False)
+            html_str += seq.get_html(vocab_dict=vocab_dict, hovertext=False, max_act_color=max_act_color)
         
         html_str += "</div>"
 
@@ -311,8 +326,8 @@ class SequenceMultiGroupData:
 
     See the SequenceGroupData and SequenceData classes for more information on the arguments.
     '''
-    def __init__(self, seq_group_data: List[SequenceGroupData]):
-        self.seq_group_data = seq_group_data
+    def __init__(self, seq_group_data: list[SequenceGroupData]) -> None:
+        self.seq_group_data: list[SequenceGroupData] = seq_group_data
 
     def __getitem__(self, idx: int) -> SequenceGroupData:
         return self.seq_group_data[idx]
@@ -320,23 +335,36 @@ class SequenceMultiGroupData:
     def get_html(
         self,
         vocab_dict: Dict[int, str],
-        hovertext: bool = True
+        width: Optional[int] = 420,
+        height: Optional[int] = None,
+        hovertext: bool = True,
     ) -> str:
         '''
         Returns all the sequence groups' HTML, wrapped in grid-items (plus the JavaScript code at the end).
         '''
+        # Get max activation value, over all sequences
+        max_act_color: float = max([
+            max(seq.feat_acts) for seq_group in self.seq_group_data for seq in seq_group.seq_data
+        ])
+
         # Get the HTML for all the sequence groups (the first one is the top activations, the rest are quantiles)
         html_top, *html_quantiles = [
-            sequences_group.get_html(vocab_dict=vocab_dict, hovertext=False)
-            for sequences_group in self
+            sequences_group.get_html(
+                vocab_dict = vocab_dict,
+                max_act_color = max_act_color,
+                width = width,
+                hovertext = False,
+                margin = False, # depreciated: used to be False for only first group, now is False for all of them
+            )
+            for i, sequences_group in enumerate(self.seq_group_data)
         ]
 
         # Create a grid item for the first group, plus a grid item for every 3 quantiles, until we've used them all
-        sequences_html = f"<div class='grid-item'>{html_top}</div>"
+        sequences_html = grid_item(html_top, height=height)
         while len(html_quantiles) > 0:
             L = min(3, len(html_quantiles))
             html_next, html_quantiles = html_quantiles[:L], html_quantiles[L:]
-            sequences_html += f"<div class='grid-item'>{''.join(html_next)}</div>"
+            sequences_html += grid_item(''.join(html_next), height=height)
 
         # If necessary, add the javascript
         return sequences_html + (f"<script>{JS_HOVERTEXT_SCRIPT}</script>" if hovertext else "")
@@ -379,8 +407,8 @@ class LeftTablesData:
                 correlated_features_l1 = self.b_features_correlated[1].tolist(),
             ))
 
-        # Generate the left-hand HTML tables
-        html_str = generate_left_tables_html(
+        # Generate & return the left-hand HTML tables
+        html_str: str = generate_left_tables_html(
             neuron_alignment_indices = self.neuron_alignment[0].indices.tolist(),
             neuron_alignment_values = self.neuron_alignment[0].values.tolist(),
             neuron_alignment_l1 = self.neuron_alignment[1].tolist(),
@@ -389,8 +417,7 @@ class LeftTablesData:
             correlated_neurons_l1 = self.neurons_correlated[1].tolist(),
             **kwargs,
         )
-        # Return both items (we'll be wrapping them in 'grid-item' later)
-        return f"<div class='grid-item'>{html_str}</div>"
+        return grid_item(html_str)
 
 
 
@@ -432,7 +459,7 @@ class MiddlePlotsData:
     def get_html(
         self,
         vocab_dict: Dict[int, str],
-        grid_item: bool = True,
+        make_grid_item: bool = True,
         compact: bool = False,
         histogram_line_idx: Optional[int] = None,
     ) -> str:
@@ -441,7 +468,7 @@ class MiddlePlotsData:
             vocab_dict: Dict[int, str]
                 Used for converting token indices to string tokens.
 
-            grid_item: bool
+            make_grid_item: bool
                 Whether to wrap the HTML in a 'grid-item' div.
 
             compact: bool
@@ -491,11 +518,11 @@ class MiddlePlotsData:
             if compact:
                 assert len(html_str) == 2, f"Expected 2 HTML strings, got {len(html_str)}"
                 return "\n".join([
-                    f"<div class='grid-item'>{html_str[0]}</div>",
-                    f"<div class='grid-item' style='width:380px'>{html_str[1]}</div>",
+                    grid_item(html_str[0]),
+                    grid_item(html_str[1], width=380)
                 ])
             else:
-                return f"<div class='grid-item'>{html_str}</div>"
+                return grid_item(html_str)
         else:
             return html_str
 
@@ -540,17 +567,15 @@ class PromptData:
         '''
         Gets all the HTML for multiple sequences.
         '''
-        grid_item_style = "" if width is None else f"style='width:{width}px;'"
-        seq_width = width - 20 if width is not None else None
+        seq_width: int | None = width - 20 if width is not None else None
 
-        return f"""
-<div class='grid-item' {grid_item_style}>
-    <h3>{title}</h3>
-    {self.prompt_data.get_html(vocab_dict, hovertext, bold_idx, overflow_x="break")}
-    {self.middle_plots_data.get_html(vocab_dict, grid_item=False, histogram_line_idx=histogram_line_idx)}
-    {self.sequence_data.get_html(vocab_dict, group_size=10, width=seq_width, hovertext=hovertext)}
-</div>
+        html_contents = f"""
+<h3>{title}</h3>
+{self.prompt_data.get_html(vocab_dict, hovertext, bold_idx, overflow_x="break")}
+{self.middle_plots_data.get_html(vocab_dict, make_grid_item=False, histogram_line_idx=histogram_line_idx)}
+{self.sequence_data.get_html(vocab_dict, group_size=10, width=seq_width, hovertext=hovertext)}
 """
+        return grid_item(html_contents, width=width)
         
 
 @dataclass
@@ -692,7 +717,6 @@ class FeatureData:
 
     def get_html(
         self,
-        width: Optional[int] = 420,
         split_scripts: bool = False,
     ) -> str:
         '''
@@ -707,24 +731,26 @@ class FeatureData:
                 in in a specific way to make it run).
         '''
         # Get sequence data HTML
-        sequence_html = self.sequence_data.get_html(self.vocab_dict, hovertext=True)
+        sequence_html: str = self.sequence_data.get_html(
+            self.vocab_dict,
+            width = self.fvp.seq_width,
+            height = self.fvp.seq_height,
+            hovertext = True,
+        )
 
         # Get other HTML (split depending on whether we include the left tables or not)
         if self.fvp.include_left_tables:
-            left_tables_html = self.left_tables_data.get_html()
-            middle_plots_data = self.middle_plots_data.get_html(self.vocab_dict)
+            left_tables_html: str = self.left_tables_data.get_html()
+            middle_plots_data: str = self.middle_plots_data.get_html(self.vocab_dict)
         else:
             left_tables_html = ""
-            middle_plots_data = self.middle_plots_data.get_html(self.vocab_dict, compact=True)
+            middle_plots_data: str = self.middle_plots_data.get_html(self.vocab_dict, compact=True)
 
         # Get the CSS, and make appropriate edits to it
         css = CSS
         # If no border, then delete it from the CSS
         if not(self.fvp.border):
             css = css.replace("border: 1px solid #e6e6e6;", "").replace("box-shadow: 0 5px 5px rgba(0, 0, 0, 0.25);", "")
-        # If width is specified, then replace all the sequence html objects with the correct width
-        if width is not None:
-            sequence_html = sequence_html.replace("class='grid-item'", f"class='grid-item' style='width:{width}px;'")
 
         html_str = f"""
 <style>

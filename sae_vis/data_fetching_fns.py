@@ -48,8 +48,6 @@ from sae_vis.data_storing_fns import (
 
 
 
-
-
 def compute_feat_acts(
     model_acts: Float[Tensor, "batch seq d_in"],
     feature_idx: Int[Tensor, "feats"],
@@ -65,10 +63,8 @@ def compute_feat_acts(
     Args:
         model_acts: Float[Tensor, "batch seq d_in"]
             The activations of the model, which the SAE was trained on.
-        feature_act_dir: Float[Tensor, "d_in feats"]
-            The SAE's encoder weights for the feature(s) which we're interested in.
-        feature_bias: Float[Tensor, "feats"]
-            The bias of the encoder, which we add to the feature activations before ReLU'ing.
+        feature_idx: Int[Tensor, "feats"]
+            The features we're computing the activations for. This will be used to index the encoder's weights.
         encoder: AutoEncoder
             The encoder object, which we use to calculate the feature activations.
         encoder_B: Optional[AutoEncoder]

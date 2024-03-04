@@ -138,7 +138,6 @@ def generate_tok_html(
 
 
 
-
 def generate_seq_html(
     vocab_dict: dict,
     token_ids: List[str],
@@ -150,12 +149,14 @@ def generate_seq_html(
     neg_val: Optional[List[List[float]]] = None,
     bold_idx: Optional[int] = None,
     overflow_x: Literal["break", None] = "break",
-):
+    max_act_color: Optional[float] = None,
+) -> str:
     assert len(token_ids) == len(feat_acts) == len(contribution_to_loss), f"All input lists must be of the same length, not {len(token_ids)}, {len(feat_acts)}, {len(contribution_to_loss)}"
 
-    # ! Clip values in [0, 1] range (temporary)
-    bg_values = np.clip(feat_acts, 0, 1)
-    underline_values = np.clip(contribution_to_loss, -1, 1)
+    # If max_act_color is None, we set it to be the max of feature_acts
+    bg_denom = max_act_color if max_act_color is not None else float(np.max(feat_acts))
+    bg_values = np.maximum(feat_acts, 0.0) / bg_denom
+    underline_values = np.clip(contribution_to_loss, -1, 1).tolist()
 
     classname = "seq" if (overflow_x is None) else "seq-break"
     html_output = f'<div class="{classname}">'
@@ -363,12 +364,12 @@ def adjust_hovertext(html_str):
     which works on the assumption that this function has been run, i.e. it won't look good if this fn
     doesn't get run.
     '''
-    def replace_fn(match: re.Match):
+    def replace_fn(match: re.Match) -> str:
         replace_fn.counter += 1
         return f"class=\"tooltip\" id=\"tooltip-{replace_fn.counter:04}\""
     replace_fn.counter = 0
     html_str = re.sub(r'class="tooltip"', replace_fn, html_str)
-    def replace_fn(match: re.Match):
+    def replace_fn(match: re.Match) -> str:
         replace_fn.counter += 1
         return f"class=\"hover-text\" data-tooltip-id=\"tooltip-{replace_fn.counter:04}\""
     replace_fn.counter = 0
@@ -385,4 +386,23 @@ def adjust_hovertext(html_str):
 
     return html_str
 
+
+
+
+def grid_item(
+    html_contents: str,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+) -> str:
+    '''
+    Wraps the HTML contents in a 'grid-item' element.
+
+    If width or height are given, the grid item will be rendered at a fixed size (with scrollbars).
+    '''
+    width_str: str = f"width: {width}px;" if width is not None else ""
+    height_str: str = f"height: {height}px;" if height is not None else ""
+    if height is not None:
+        print(height_str)
+    
+    return f'<div class="grid-item" style="{width_str} {height_str}">{html_contents}</div>'
 
