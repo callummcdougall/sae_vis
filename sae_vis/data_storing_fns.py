@@ -23,7 +23,6 @@ from sae_vis.utils_fns import (
     TopK,
     merge_lists,
     extract_and_remove_scripts,
-    device,
 )
 from sae_vis.html_fns import (
     generate_seq_html,

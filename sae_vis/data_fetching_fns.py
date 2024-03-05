@@ -28,7 +28,7 @@ from sae_vis.utils_fns import (
     create_vocab_dict,
     QuantileCalculator,
     TopK,
-    device,
+    get_device,
 )
 from sae_vis.data_storing_fns import (
     FeatureVisParams,
@@ -45,7 +45,7 @@ from sae_vis.data_storing_fns import (
     MultiPromptData,
 )
 
-
+device = get_device()
 
 
 def compute_feat_acts(
