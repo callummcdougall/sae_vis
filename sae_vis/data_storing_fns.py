@@ -141,7 +141,7 @@ class FeatureVisParams:
     other_groups_size: int = 5
 
     border: bool = True
-    seq_width: Optional[int] = 440
+    seq_width: Optional[int] = 425
     seq_height: Optional[int] = None
 
     seed: Optional[int] = 0
@@ -152,7 +152,7 @@ class FeatureVisParams:
         Prints out the values & meanings of all the parameters. Also highlights when they're different to default.
         '''
         default_fvp = FeatureVisParams()
-        table = Table("Parameter", "Value", "Meaning", title="FeatureVisParams", show_lines=True)
+        table = Table("Parameter", "Value", "Meaning", title="FeatureVisParams (orange = changed from default)", show_lines=True)
         for param, meaning in FEATURE_VIZ_PARAMS.items():
             value = str(getattr(self, param))
             default_value = str(getattr(default_fvp, param))
@@ -374,7 +374,7 @@ class SequenceGroupData:
         vocab_dict: Dict[int, str],
         group_size: Optional[int] = None,
         hovertext: bool = True,
-        width: Optional[int] = 440,
+        width: Optional[int] = 425,
         max_act_color: Optional[float] = None,
     ) -> str:
         '''
@@ -438,7 +438,7 @@ class SequenceMultiGroupData:
     def get_html(
         self,
         vocab_dict: Dict[int, str],
-        width: Optional[int] = 440,
+        width: Optional[int] = 425,
         height: Optional[int] = None,
         hovertext: bool = True,
     ) -> str:
@@ -659,7 +659,7 @@ class PromptData:
         vocab_dict: Dict[int, str],
         hovertext: bool = True,
         bold_idx: Optional[int] = None,
-        width: Optional[int] = 440,
+        width: Optional[int] = 425,
         histogram_line_idx: Optional[int] = None,
     ) -> str:
         '''
@@ -716,7 +716,7 @@ class MultiPromptData:
         seq_pos: int,
         score_name: Literal["act_size", "act_quantile", "loss_effect"],
         vocab_dict: Dict[int, str],
-        width: Optional[int] = 440,
+        width: Optional[int] = 425,
     ) -> str:
         
         # Check arguments are valid, and if they are then get the score title (i.e. the how it'll appear in HTML)
