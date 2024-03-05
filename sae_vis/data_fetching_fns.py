@@ -116,7 +116,7 @@ def _get_feature_data(
     feature_indices: Union[int, List[int]],
     fvp: FeatureVisParams,
     progress_bars: Dict[str, tqdm],
-) -> Tuple[MultiFeatureData, Dict[str, int], Dict[str, float]]:
+) -> Tuple[MultiFeatureData, Dict[str, float]]:
     '''
     Gets data that will be used to create the sequences in the feature-centric HTML visualisation.
     
@@ -153,9 +153,6 @@ def _get_feature_data(
         MultiFeatureData
             Containing data for creating each feature visualization, as well as data for rank-ordering the feature
             visualizations when it comes time to make the prompt-centric view (the `feature_act_quantiles` attribute).
-
-        vocab_dict: Dict[str, int]
-            A dictionary containing the vocabulary of the model, which is used to convert token IDs to strings.
 
         time_log: Dict[str, float]
             A dictionary containing the time taken for each step of the computation. This is optionally printed at the
@@ -332,7 +329,7 @@ def _get_feature_data(
         "Other": (t1 - t0) + (t6 - t5),
     }
 
-    return MultiFeatureData(feature_data, feature_act_quantiles), vocab_dict, time_logs
+    return MultiFeatureData(feature_data, feature_act_quantiles), time_logs
 
 
 
@@ -344,7 +341,7 @@ def get_feature_data(
     tokens: Int[Tensor, "batch seq"],
     fvp: FeatureVisParams,
     encoder_B: Optional[AutoEncoder] = None,
-) -> Tuple[MultiFeatureData, Dict[str, int]]:
+) -> MultiFeatureData:
     '''
     This is the main function which users will run to generate the feature visualization data. It batches this
     computation over features, in accordance with the arguments in the FeatureVisParams object (we don't want to
@@ -353,7 +350,7 @@ def get_feature_data(
     See the `_get_feature_data` function for an explanation of the arguments, as well as a more detailed explanation
     of what this function is doing.
 
-    The return objects are the MultiFeatureData and vocab_dict objects returned by the `_get_feature_data` function.
+    The return object is the merged MultiFeatureData objects returned by the `_get_feature_data` function.
     '''
     # Apply random seed
     if fvp.seed is not None:
@@ -389,7 +386,7 @@ def get_feature_data(
 
     # For each feat: get new data and update global data storage objects
     for features in feature_batches:
-        new_feature_data, vocab_dict, new_time_logs = _get_feature_data(
+        new_feature_data, new_time_logs = _get_feature_data(
             encoder, encoder_B, model, tokens, features, fvp, progress_bars
         )
         feature_data.update(new_feature_data)
@@ -404,7 +401,7 @@ def get_feature_data(
             table.add_row(task, f"{duration:.2f}s", f"{duration/total_time:.1%}")
         rprint(table)
 
-    return feature_data, vocab_dict
+    return feature_data
 
 
 
