@@ -8,6 +8,7 @@ setup(
         'torch',
         'einops',
         'datasets',
+        'dataclasses-json',
         'jaxtyping',
         # 'eindex',
     ],

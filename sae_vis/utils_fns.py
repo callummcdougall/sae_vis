@@ -1,13 +1,15 @@
 # %%
 
 from jaxtyping import Float, Int, Bool
-from typing import Tuple, Optional, Union, Dict, List
+from typing import Tuple, Optional, Union, Dict, List, Literal
 import re
 import torch
 from torch import Tensor
 import numpy as np
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from tqdm import tqdm
+from dataclasses import dataclass, field
+from dataclasses_json import dataclass_json
 
 from transformer_lens import utils
 
@@ -24,7 +26,8 @@ def get_device() -> torch.device:
         device = torch.device("cpu")
     return device
 
-device = get_device()
+# # Depreciated - we no longer use a global device variable
+# device = get_device()
 
 Arr = np.ndarray 
 
@@ -150,13 +153,18 @@ def process_str_tok(str_tok: str) -> str:
 
 
 
-def to_str_tokens(vocab_dict: Dict[int, str], tokens: Union[int, torch.Tensor]):
+def to_str_tokens(vocab_dict: Dict[int, str], tokens: Union[int, List[int], torch.Tensor]):
     '''
     Helper function which converts tokens to their string representations, but (if tokens is a tensor) keeps
     them in the same shape as the original tensor (i.e. nested lists).
     '''
+    # Deal with the int case separately
     if isinstance(tokens, int):
         return vocab_dict[tokens]
+
+    # If the tokens are a (possibly nested) list, turn them into a tensor
+    if isinstance(tokens, list):
+        tokens = torch.tensor(tokens)
 
     # Get flattened list of tokens
     str_tokens = [vocab_dict[t] for t in tokens.flatten().tolist()]
@@ -232,9 +240,9 @@ class TopK:
 
         # Get an array of indices and values (with unimportant elements) which we'll index into using the topk object
         topk_shape = (*tensor_mask.shape, self.k)
-        topk_indices = torch.zeros(topk_shape).to(device).long() # shape [... k]
+        topk_indices = torch.zeros(topk_shape).to(tensor.device).long() # shape [... k]
         topk_indices[tensor_mask] = topk.indices
-        topk_values = torch.zeros(topk_shape).to(device) # shape [... k]
+        topk_values = torch.zeros(topk_shape).to(tensor.device) # shape [... k]
         topk_values[tensor_mask] = topk.values
 
         return utils.to_numpy(topk_values), utils.to_numpy(topk_indices)
@@ -271,23 +279,39 @@ def extract_and_remove_scripts(html_content: str) -> Tuple[str, str]:
 
 
 
+def pad_with_zeros(x: List[float], n: int, side: Literal["left", "right"] = "left") -> List[float]:
+    '''
+    Pads a list with zeros to make it the correct length.
+    '''
+    assert len(x) <= n, "Error: x must have fewer than n elements."
+
+    if side == "left":
+        return x + [0.0] * (n - len(x))
+    else:
+        return [0.0] * (n - len(x)) + x
+
 
 # %%
+    
+# This defines the number of decimal places we'll use. It's assumed to refer to values in the range [0, 1] rather than
+# pct, e.g. precision of 5 would be 99.497% = 0.99497. In other words, decimal_places = precision - 2.
 
 SYMMETRIC_RANGES_AND_PRECISIONS = [
-    ((0.0, 0.01), 5),
-    ((0.01, 0.05), 4),
-    ((0.05, 0.95), 3),
-    ((0.95, 0.99), 4),
-    ((0.99, 1.0), 5),
+    [[0.0, 0.01], 5],
+    [[0.01, 0.05], 4],
+    [[0.05, 0.95], 3],
+    [[0.95, 0.99], 4],
+    [[0.99, 1.0], 5],
 ]
 ASYMMETRIC_RANGES_AND_PRECISIONS = [
-    ((0.0, 0.95), 3),
-    ((0.95, 0.99), 4),
-    ((0.99, 1.0), 5),
+    [[0.0, 0.95], 3],
+    [[0.95, 0.99], 4],
+    [[0.99, 1.0], 5],
 ]
 
 
+@dataclass_json
+@dataclass
 class QuantileCalculator:
     '''
     This class is initialized with some float-type data, as well as a list of ranges and precisions. It will only keep
@@ -300,17 +324,21 @@ class QuantileCalculator:
     in 2D tensor format, with the first dimension being the batch dim, i.e. each row is a different dataset which we
     want to be able to compute quantiles from.
     '''
-    def __init__(
-        self,
+    quantiles: List[float] = field(default_factory=list)
+    quantile_data: List[List[float]] = field(default_factory=list)
+    ranges_and_precisions: list = field(default_factory=lambda: ASYMMETRIC_RANGES_AND_PRECISIONS)
+
+
+    @classmethod
+    def from_data(
+        cls,
         data: Optional[Float[Tensor, "batch data"]] = None,
         ranges_and_precisions: list = ASYMMETRIC_RANGES_AND_PRECISIONS,
-    ):
-        # Get the data for the actual ranges_and_precisions list (so we can more easily return the precision)
-        rp = ranges_and_precisions
-        self.rp = rp
-        self.ranges = torch.tensor([r[0] for (r, p) in rp] + [1.0]).to(device)
-        self.precisions = torch.tensor([rp[0][1]] + [p for (r, p) in rp] + [rp[-1][1]]).to(device)
-
+    ) -> "QuantileCalculator":
+        '''
+        Returns a QuantileCalculator object, from data. This method is different from the __init__ method, because the
+        __init__ method has to be compatible with the way dataclasses are loaded from JSON.
+        '''
         # Generate quantiles from the ranges_and_precisions list
         quantiles = []
         for r, p in ranges_and_precisions:
@@ -320,12 +348,22 @@ class QuantileCalculator:
 
         # If data is None, then set the quantiles and quantile_data to None, and return
         if data is None:
-            self.quantiles = None
-            self.quantile_data = None
+            quantiles = []
+            quantile_data = []
         # Else, get the actual quantile values (which we'll use to calculate the quantiles of any new data)
         else:
-            self.quantiles = torch.tensor(quantiles + [1.0], dtype=data.dtype).to(device)
-            self.quantile_data = torch.quantile(data, torch.tensor(quantiles).to(device, dtype=data.dtype), dim=-1).T
+            quantiles_tensor = torch.tensor(quantiles, dtype=data.dtype).to(data.device)
+            quantile_data = torch.quantile(data, quantiles_tensor, dim=-1).T.tolist()
+
+        quantiles = [round(q, 6) for q in quantiles + [1.0]]
+        quantile_data = [[round(q, 6) for q in qd] for qd in quantile_data]
+
+        # Now, strip out the quantile data prefixes which are all zeros
+        for i, qd in enumerate(quantile_data):
+            first_nonzero = next((i for i, x in enumerate(qd) if abs(x) > 1e-6), len(qd))
+            quantile_data[i] = qd[first_nonzero:]
+
+        return cls(quantiles, quantile_data, ranges_and_precisions)
 
 
     def update(self, other: "QuantileCalculator"):
@@ -335,15 +373,11 @@ class QuantileCalculator:
 
         Note, we also deal with the special case where self has no data.
         '''
-        assert self.rp == other.rp, "Error: can't merge two QuantileCalculator objects with different ranges."
-        # assert isinstance(other, QuantileCalculator), "Error: can only merge QuantileCalculator objects."
-
-        if self.quantiles is None:
-            self.quantiles = other.quantiles
-            self.quantile_data = other.quantile_data
-        else:
-            self.quantiles = torch.cat([self.quantiles, other.quantiles])
-            self.quantile_data = torch.cat([self.quantile_data, other.quantile_data])
+        assert self.ranges_and_precisions == other.ranges_and_precisions,\
+            "Error: can't merge two QuantileCalculator objects with different ranges."
+        
+        self.quantiles.extend(other.quantiles)
+        self.quantile_data.extend(other.quantile_data)
 
 
     def get_quantile(
@@ -368,6 +402,16 @@ class QuantileCalculator:
             precisions:
                 The precision of the quantiles (i.e. how many decimal places we're accurate to).
         '''
+        rp = self.ranges_and_precisions
+        ranges = torch.tensor([r[0] for (r, p) in rp] + [1.0]).to(values.device)
+        precisions = torch.tensor([rp[0][1]] + [p for (r, p) in rp] + [rp[-1][1]]).to(values.device)
+
+        # For efficient storage, we remove the zeros from quantile_data (it may start with zeros). So when converting it
+        # back to a tensor, we need to pad it with zeros again.
+        n_buckets = len(self.quantiles) - 1
+        quantiles = torch.tensor(self.quantiles).to(values.device)
+        quantile_data = torch.tensor([pad_with_zeros(x, n_buckets) for x in self.quantile_data]).to(values.device)
+
         values_is_1d = (values.ndim == 1)
         if values_is_1d:
             values = values.unsqueeze(1)
@@ -375,12 +419,12 @@ class QuantileCalculator:
             batch_indices = slice(None)
 
         # Find the quantiles of these values (i.e. the values between 0 and 1)
-        quantile_indices = torch.searchsorted(self.quantile_data[batch_indices], values) # shape [batch data_dim]
-        quantiles = self.quantiles[quantile_indices]
+        quantile_indices = torch.searchsorted(quantile_data[batch_indices], values) # shape [batch data_dim]
+        quantiles = quantiles[quantile_indices]
 
         # Also get the precisions (which we do using a separate searchsorted, only over the range dividers)
-        precision_indices = torch.searchsorted(self.ranges, quantiles) # shape [batch data_dim]
-        precisions = self.precisions[precision_indices]
+        precision_indices = torch.searchsorted(ranges, quantiles) # shape [batch data_dim]
+        precisions = precisions[precision_indices]
 
         # If values was 1D, we want to return the result as 1D also (for convenience)
         if values_is_1d:
@@ -392,10 +436,14 @@ class QuantileCalculator:
 
 # Example usage
 if MAIN:
-    # 2D data: each row represents the activations data of a different feature
-    data = torch.stack([torch.rand(100_000), torch.rand(100_000)]).to(device)
-    qc = QuantileCalculator(data)
-    print(f"Total datapoints stored = {qc.quantile_data.numel():_}\n(less than full data size = {data.numel():_})\n")
+    # 2D data: each row represents the activations data of a different feature. We set some of it to zero, so we can
+    # test the "JSON doesn't store zeros" feature of the QuantileCalculator class.
+    device = get_device()
+    N = 100_000
+    data = torch.stack([torch.rand(N).masked_fill(torch.rand(N) < 0.5, 0.0), torch.rand(N)]).to(device)
+    qc = QuantileCalculator.from_data(data)
+    print(f"Total datapoints stored = {sum(len(x) for x in qc.quantile_data):_}")
+    print(f"Total datapoints used to compute quantiles = {data.numel():_}\n")
 
     # 2D values tensor: each row applies to a different dataset
     values = torch.tensor([[0.0, 0.005, 0.02, 0.25], [0.75, 0.98, 0.995, 1.0]]).to(device)
@@ -403,6 +451,7 @@ if MAIN:
 
     for v, q, p in zip(values.flatten(), quantiles.flatten(), precisions.flatten()):
         print(f"Value: {v:.3f}, Precision: {p}, Quantile: {q:.{p-2}%}")
+
 
 # %%
 
@@ -431,6 +480,4 @@ if MAIN:
     print(split_string(input_string, str1, str2))
 
 # %%
-    
-
 

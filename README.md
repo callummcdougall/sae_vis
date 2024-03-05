@@ -61,7 +61,7 @@ I'll start with one-sentence summaries of each folder or file. I'll have longer 
 
 * `css`, `html`, `js` - these contain raw CSS / HTML / JavaScript files which are read by `html_fns.py` and processed to create visualisations.
 * `data_fetching_fns.py` - this returns data from the transformer (i.e. running batches on it and getting things like feature activations, ablation results, etc).
-* `data_storing_fns.py` - this contains classes for storing data, which are then used to create visualisations. It's basically the middleman between `data_fetching_fns.py` and `html_fns.py`.
+* `data_storing_fns.py` - this contains classes for storing data, which are then used to create visualisations (or save/load the data in JSON format). It's basically the middleman between `data_fetching_fns.py` and `html_fns.py`.
 * `html_fns.py` - this contains functions which produce HTML visualisations. No computation is done here, everything is assumed to be of types like `str`, `float`, `int` or lists of these (i.e. no tensors or numpy arrays).
 * `demo.ipynb` - this contains a demo you can run to actually generate visualisations.
 * `utils_fns.py` - basic helper functions.
@@ -70,6 +70,7 @@ In other words, the basic workflow here is:
 
 * Fetch the data using forward passes, via `data_fetching_fns.py`, and store them in datastructures defined in `data_storing_fns.py`,
 * Call the `get_html` methods of these datastructures, which in turn call functions in `html_fns.py`, which read the raw HTML/CSS/JS files and insert the data into them using regex functions.
+* Use the `save_json` method to save the data as a JSON file, or `load_json` classmethod to load it back in.
 
 ## Long descriptions
 

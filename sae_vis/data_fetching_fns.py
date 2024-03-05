@@ -116,7 +116,7 @@ def _get_feature_data(
     feature_indices: Union[int, List[int]],
     fvp: FeatureVisParams,
     progress_bars: Dict[str, tqdm],
-) -> Tuple[MultiFeatureData, Dict[str, float]]:
+) -> Tuple[MultiFeatureData, Dict[str, int], Dict[str, float]]:
     '''
     Gets data that will be used to create the sequences in the feature-centric HTML visualisation.
     
@@ -153,6 +153,10 @@ def _get_feature_data(
         MultiFeatureData
             Containing data for creating each feature visualization, as well as data for rank-ordering the feature
             visualizations when it comes time to make the prompt-centric view (the `feature_act_quantiles` attribute).
+
+        vocab_dict: Dict[str, int]
+            A dictionary containing the vocabulary of the model, which is used to convert token IDs to strings.
+
         time_log: Dict[str, float]
             A dictionary containing the time taken for each step of the computation. This is optionally printed at the
             end of the `get_feature_data` function, if `fvp.verbose` is set to True.
@@ -219,23 +223,29 @@ def _get_feature_data(
 
         # Table 1: neuron alignment, based on decoder weights
         top3_neurons_aligned = TopK(feature_out_dir, k=fvp.rows_in_left_tables, largest=True)
-        pct_of_l1 = np.absolute(top3_neurons_aligned.values) / utils.to_numpy(feature_out_dir.abs().sum(dim=-1, keepdim=True))
+        pct_of_l1: Arr = np.absolute(top3_neurons_aligned.values) / utils.to_numpy(feature_out_dir.abs().sum(dim=-1, keepdim=True))
         
         # Table 2: neurons correlated with this feature, based on their activations
         pearson_topk_neurons, cossim_values_neurons = corrcoef_neurons.topk_pearson(k=fvp.rows_in_left_tables)
         
         # Table 3: encoder-B features correlated with this feature, based on their activations
-        b_features_correlated = [None] * len(feature_indices)
-        if corrcoef_encoder_B is not None:
+        # Note, we deal with this differently, because supplying this argument is optional
+        using_B = encoder_B is not None
+        if using_B:
             pearson_topk_encoderB, cossim_values_encoderB = corrcoef_encoder_B.topk_pearson(k=fvp.rows_in_left_tables)
-            b_features_correlated = list(zip(pearson_topk_encoderB, cossim_values_encoderB))
         
         # Add all this data to the list of LeftTablesData objects
         for i, feat in enumerate(feature_indices):
             left_tables_data_dict[feat] = LeftTablesData(
-                neuron_alignment = (top3_neurons_aligned[i], pct_of_l1[i]),
-                neurons_correlated = (pearson_topk_neurons[i], cossim_values_neurons[i]),
-                b_features_correlated = b_features_correlated[i],
+                neuron_alignment_indices = top3_neurons_aligned[i].indices.tolist(),
+                neuron_alignment_values = top3_neurons_aligned[i].values.tolist(),
+                neuron_alignment_l1 = pct_of_l1[i].tolist(),
+                correlated_neurons_indices = pearson_topk_neurons[i].indices.tolist(),
+                correlated_neurons_pearson = pearson_topk_neurons[i].values.tolist(),
+                correlated_neurons_l1 = cossim_values_neurons[i].tolist(),
+                correlated_features_indices = pearson_topk_encoderB[i].indices.tolist() if using_B else None,
+                correlated_features_pearson = pearson_topk_encoderB[i].values.tolist() if using_B else None,
+                correlated_features_l1 = cossim_values_encoderB[i].tolist() if using_B else None,
             )
     else:
         left_tables_data_dict = {feat: None for feat in feature_indices}
@@ -267,23 +277,25 @@ def _get_feature_data(
     # Get the logits of all features (i.e. the directions this feature writes to the logit output)
     logits = einops.einsum(feature_resid_dir, model.W_U, "feats d_model, d_model d_vocab -> feats d_vocab")
 
-    for i, (feat, logit) in enumerate(zip(feature_indices, logits)):
+    for i, (feat, logit_vector) in enumerate(zip(feature_indices, logits)):
 
         # Get data for logits (the histogram, and the table)
-        logits_histogram_data = HistogramData(logit, n_bins=40, tickmode="5 ticks")
-        top10_logits = TopK(logit, k=10, largest=True)
-        bottom10_logits = TopK(logit, k=10, largest=False)
+        logits_histogram_data = HistogramData.from_data(logit_vector, n_bins=40, tickmode="5 ticks")
+        top10_logits = TopK(logit_vector, k=10, largest=True)
+        bottom10_logits = TopK(logit_vector, k=10, largest=False)
 
         # Get data for feature activations histogram (the title, and the histogram)
         feat_acts = all_feat_acts[..., i]
         nonzero_feat_acts = feat_acts[feat_acts > 0]
         frac_nonzero = nonzero_feat_acts.numel() / feat_acts.numel()
-        freq_histogram_data = HistogramData(nonzero_feat_acts, n_bins=40, tickmode="ints")
+        freq_histogram_data = HistogramData.from_data(nonzero_feat_acts, n_bins=40, tickmode="ints")
 
         # Create a MiddlePlotsData object from this, and add it to the dict
         middle_plots_data_dict[feat] = MiddlePlotsData(
-            bottom10_logits = bottom10_logits,
-            top10_logits = top10_logits,
+            bottom10_logits = bottom10_logits.values.tolist(),
+            bottom10_token_ids = bottom10_logits.indices.tolist(),
+            top10_logits = top10_logits.values.tolist(),
+            top10_token_ids = top10_logits.indices.tolist(),
             logits_histogram_data = logits_histogram_data,
             freq_histogram_data = freq_histogram_data,
             frac_nonzero = frac_nonzero,
@@ -302,14 +314,13 @@ def _get_feature_data(
             left_tables_data = left_tables_data_dict[feat],
             # Non data-containing inputs
             feature_idx = feat,
-            vocab_dict = vocab_dict,
             fvp = fvp,
         )
         for feat in feature_indices
     }
 
     # Also get the quantiles, which will be useful for the prompt-centric visualisation
-    feature_act_quantiles = QuantileCalculator(data=einops.rearrange(all_feat_acts, "b s feats -> feats (b s)"))
+    feature_act_quantiles = QuantileCalculator.from_data(data=einops.rearrange(all_feat_acts, "b s feats -> feats (b s)"))
 
     t6 = time.time()
 
@@ -321,7 +332,7 @@ def _get_feature_data(
         "Other": (t1 - t0) + (t6 - t5),
     }
 
-    return MultiFeatureData(feature_data, feature_act_quantiles), time_logs
+    return MultiFeatureData(feature_data, feature_act_quantiles), vocab_dict, time_logs
 
 
 
@@ -333,7 +344,7 @@ def get_feature_data(
     tokens: Int[Tensor, "batch seq"],
     fvp: FeatureVisParams,
     encoder_B: Optional[AutoEncoder] = None,
-) -> MultiFeatureData:
+) -> Tuple[MultiFeatureData, Dict[str, int]]:
     '''
     This is the main function which users will run to generate the feature visualization data. It batches this
     computation over features, in accordance with the arguments in the FeatureVisParams object (we don't want to
@@ -341,7 +352,14 @@ def get_feature_data(
 
     See the `_get_feature_data` function for an explanation of the arguments, as well as a more detailed explanation
     of what this function is doing.
+
+    The return objects are the MultiFeatureData and vocab_dict objects returned by the `_get_feature_data` function.
     '''
+    # Apply random seed
+    if fvp.seed is not None:
+        torch.manual_seed(fvp.seed)
+        np.random.seed(fvp.seed)
+
     # Create objects to store all the data we'll get from `_get_feature_data`
     feature_data = MultiFeatureData()
     time_logs = defaultdict(float)
@@ -360,9 +378,10 @@ def get_feature_data(
     n_token_batches = 1 if (fvp.minibatch_size_tokens is None) else math.ceil(len(tokens) / fvp.minibatch_size_tokens)
 
     # Add two progress bars (one for the forward passes, one for getting the sequence data)
-    progress_bar_tokens = tqdm(total=n_token_batches*len(feature_batches), desc="Forward passes to gather data")
-    progress_bar_feats = tqdm(total=len(features_list), desc="Getting sequence data")
-    progress_bars = {"tokens": progress_bar_tokens, "feats": progress_bar_feats}
+    progress_bars = {
+        "tokens": tqdm(total=n_token_batches*len(feature_batches), desc="Forward passes to gather data"),
+        "feats": tqdm(total=len(features_list), desc="Getting sequence data"),
+    }
 
     # If the model is from TransformerLens, we need to apply a wrapper to it for standardization
     assert isinstance(model, HookedTransformer), "Error: non-HookedTransformer models are not yet supported."
@@ -370,7 +389,9 @@ def get_feature_data(
 
     # For each feat: get new data and update global data storage objects
     for features in feature_batches:
-        new_feature_data, new_time_logs = _get_feature_data(encoder, encoder_B, model, tokens, features, fvp, progress_bars)
+        new_feature_data, vocab_dict, new_time_logs = _get_feature_data(
+            encoder, encoder_B, model, tokens, features, fvp, progress_bars
+        )
         feature_data.update(new_feature_data)
         for key, value in new_time_logs.items():
             time_logs[key] += value
@@ -383,7 +404,7 @@ def get_feature_data(
             table.add_row(task, f"{duration:.2f}s", f"{duration/total_time:.1%}")
         rprint(table)
 
-    return feature_data
+    return feature_data, vocab_dict
 
 
 
@@ -488,9 +509,10 @@ def get_sequences_data(
                 feat_acts = feat_acts_group[i, 1:].tolist(),
                 contribution_to_loss = contribution_to_loss[i].tolist(),
                 top5_token_ids = top5_contribution_to_logits.indices[i].tolist(),
-                top5_logit_contributions = top5_contribution_to_logits.values[i].tolist(),
+                top5_logits = top5_contribution_to_logits.values[i].tolist(),
                 bottom5_token_ids = bottom5_contribution_to_logits.indices[i].tolist(),
-                bottom5_logit_contributions = bottom5_contribution_to_logits.values[i].tolist(),
+                bottom5_logits = bottom5_contribution_to_logits.values[i].tolist(),
+                filter = True,
             )
             for i in range(group_sizes_cumsum[group_idx], group_sizes_cumsum[group_idx+1])
         ]
@@ -604,9 +626,10 @@ def get_prompt_data(
             feat_acts = feat_acts[:, i].tolist(),
             contribution_to_loss = [0.0] + contribution_to_loss.tolist(),
             top5_token_ids = top5_contribution_to_logits.indices.tolist(),
-            top5_logit_contributions = top5_contribution_to_logits.values.tolist(),
+            top5_logits = top5_contribution_to_logits.values.tolist(),
             bottom5_token_ids = bottom5_contribution_to_logits.indices.tolist(),
-            bottom5_logit_contributions = bottom5_contribution_to_logits.values.tolist(),
+            bottom5_logits = bottom5_contribution_to_logits.values.tolist(),
+            filter = True,
         )
 
         # Get the logits for the correct tokens
@@ -629,8 +652,9 @@ def get_prompt_data(
 
     # ! Lastly, use the 3 possible criteria (act size, act quantile, loss effect) to find all the top-scoring features
 
-    # Construct a scores dict, which maps from things like ("act_quantile", seq_pos) to a list of the top-scoring features
-    scores_dict: Dict[Tuple[str, str], Tuple[TopK, List[str]]] = {}
+    # Construct a scores dict, which maps from things like f"act_quantile-{seq_pos}" to a list of the top-scoring
+    # features and their scores
+    scores_dict: Dict[str, Tuple[List[int], List[str]]] = {}
 
     for seq_pos, str_tok in enumerate(str_toks):
 
@@ -645,17 +669,21 @@ def get_prompt_data(
             
             # Get the "act_size" scores (we return it as a TopK object)
             act_size_topk = TopK(_feat_acts, k=k, largest=True)
-            # Replace the indices with feature indices (these are different when feature_idx argument is not [0, 1, 2, ...])
-            act_size_topk.indices[:] = _feature_idx[act_size_topk.indices]
-            scores_dict[("act_size", seq_pos)] = (act_size_topk, ".3f")
+            # Store the actual feature indices, and the string representations of the scores
+            scores_dict[f"act_size-{seq_pos}"] = (
+                _feature_idx[act_size_topk.indices].tolist(), # these are the feature indices
+                [f"{v:.3f}" for v in act_size_topk.values], # these are the formatted scores
+            )
 
             # Get the "act_quantile" scores, which is just the fraction of cached feat acts that it is larger than
             act_quantile, act_precision = feature_data.feature_act_quantiles.get_quantile(_feat_acts, feat_acts_nonzero_locations)
             act_quantile_topk = TopK(act_quantile, k=k, largest=True)
-            act_formatting_topk = [f".{act_precision[i]-2}%" for i in act_quantile_topk.indices]
-            # Replace the indices with feature indices (these are different when feature_idx argument is not [0, 1, 2, ...])
-            act_quantile_topk.indices[:] = _feature_idx[act_quantile_topk.indices]
-            scores_dict[("act_quantile", seq_pos)] = (act_quantile_topk, act_formatting_topk)
+            act_formatting = [f".{act_precision[i]-2}%" for i in act_quantile_topk.indices]
+            # Store the actual feature indices, and the string representations of the scores
+            scores_dict[f"act_quantile-{seq_pos}"] = (
+                _feature_idx[act_quantile_topk.indices].tolist(), # these are the feature indices
+                [f"{v:{f}}" for v, f in zip(act_quantile_topk.values, act_formatting)], # these are the formatted scores
+            )
 
         # We don't measure loss effect on the first token
         if seq_pos == 0:
@@ -672,20 +700,22 @@ def get_prompt_data(
             # Get the "loss_effect" scores, which are just the min of features' contributions to loss (min because we're
             # looking for helpful features, not harmful ones)
             contribution_to_loss_topk = TopK(_contribution_to_loss, k=k, largest=False)
-            # Replace the indices with feature indices (these are different when feature_idx argument is not [0, 1, 2, ...])
-            contribution_to_loss_topk.indices[:] = _feature_idx_prev[contribution_to_loss_topk.indices]
-            scores_dict[("loss_effect", seq_pos)] = (contribution_to_loss_topk, ".3f")
+            # Store the actual feature indices, and the string representations of the scores
+            scores_dict[f"loss_effect-{seq_pos}"] = (
+                _feature_idx_prev[contribution_to_loss_topk.indices].tolist(), # these are the feature indices
+                [f"{v:.3f}" for v in contribution_to_loss_topk.values], # these are the formatted scores
+            )
 
     # Get all the features which are required (i.e. all the sequence position indices)
     feature_idx_required = set()
-    for (score_topk, formatting_topk) in scores_dict.values():
-        feature_idx_required.update(set(score_topk.indices.tolist()))
+    for (feature_indices, score_strings) in scores_dict.values():
+        feature_idx_required.update(set(feature_indices))
 
     prompt_data_dict = {
         feat: PromptData(
             prompt_data = sequence_data_dict[feat],
-            sequence_data = feature_data[feat].sequence_data[0],
             middle_plots_data = feature_data[feat].middle_plots_data,
+            sequence_data = feature_data[feat].sequence_data[0],
         )
         for feat in feature_idx_required
     }

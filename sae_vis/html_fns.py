@@ -1,4 +1,5 @@
 from matplotlib import colors
+import copy
 import numpy as np
 from typing import List, Optional, Tuple, Literal
 from pathlib import Path
@@ -162,6 +163,8 @@ def generate_seq_html(
     html_output = f'<div class="{classname}">'
 
     # Sometimes, pos_ids etc might be 1 shorter than token_ids, so we pad them at the start
+    pos_val = copy.deepcopy(pos_val)
+    neg_val = copy.deepcopy(neg_val)
     if (pos_ids is not None) and (len(pos_ids) == len(token_ids) - 1):
         pos_ids = [None] + pos_ids
         pos_val = [None] + pos_val

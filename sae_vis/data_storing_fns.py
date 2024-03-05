@@ -1,16 +1,19 @@
 import numpy as np
+import json
 from typing import List
 import torch
 from torch import Tensor
 from eindex import eindex
 from typing import Optional, List, Dict, Tuple, Literal, Union
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from dataclasses_json import dataclass_json
 import einops
 from jaxtyping import Float
 import re
 from rich import print as rprint
 from rich.table import Table
 from transformer_lens import utils
+import time
 
 Arr = np.ndarray
 
@@ -56,11 +59,72 @@ buffer positions.",
 the longest seq).",
     "seq_height": "The max height of the sequences in the main visualization. If None, they'll be full-height (to contain \
 all the sequences).",
+    "seed": "Seed for random number generation (used for choosing the top-k sequences).",
     "verbose": "Whether to print out the time taken for each task, and the estimated time for all features (note, this \
 can be very noisy when the number of features is small).",
 }
 
 
+def save_json(
+    obj,
+    filename: Optional[str] = None,
+    return_dict: bool = False,
+):
+    '''
+    Saves the object to a JSON file (and optionally returns dict).
+
+    Args:
+        obj: the object to be saved
+        filename: if None then we don't save, if string then we save here
+        return_dict: if True then we return the dict, if False then we return nothing
+    '''
+    t0 = time.time()
+    assert (filename is not None) or return_dict,\
+        "You're doing nothing in this function. Either specify a filename or set return_dict=True."
+
+    # Convert the object to a dictionary, and save it if necessary
+    obj_to_dict = obj.to_dict()
+    if filename is not None:
+        assert filename.endswith(".json"), "Expected filename to end with '.json'"
+        json.dump(obj_to_dict, open(filename, "w"))
+        # print(f"Saved to JSON in {time.time() - t0:.2f} seconds")
+    
+    # If we're returning the dict, then return it here
+    if return_dict:
+        # print(f"Converted to dict in {time.time() - t0:.2f} seconds total")
+        return obj_to_dict
+
+
+# Function to load a dataclass object from a dictionary
+def load_json(
+    dataclass_type,
+    data_dict: Optional[Dict] = None,
+    filename: Optional[str] = None,
+):
+    '''
+    Loads a dataclass object from a saved filename (or directly from a dict).
+
+    Args:
+        dataclass_type: the dataclass type we're loading
+        data_dict: dictionary containing the data (if not None)
+        filename: filename we're loading data from (if not None)
+    '''
+    t0 = time.time()
+    assert int(filename is None) + int(data_dict is None) == 1,\
+        "Expected exactly one of filename or data_dict should be supplied."
+    
+    # If we're using a filename, then load in the data (as a dictionary)
+    if filename is not None:
+        data_dict = json.load(open(filename, "r"))
+        # print(f"Loaded in {time.time() - t0:.2f} seconds")
+    
+    # Get dataclass object from dictionary
+    data_dict = dataclass_type.from_dict(data_dict)
+    # print(f"Converted to dataclass in {time.time() - t0:.2f} seconds total")
+    return data_dict
+
+
+@dataclass_json
 @dataclass
 class FeatureVisParams:
 
@@ -78,9 +142,10 @@ class FeatureVisParams:
     other_groups_size: int = 5
 
     border: bool = True
-    seq_width: Optional[int] = 420
+    seq_width: Optional[int] = 440
     seq_height: Optional[int] = None
 
+    seed: Optional[int] = 0
     verbose: bool = True
 
     def help(self) -> None:
@@ -97,6 +162,8 @@ class FeatureVisParams:
         rprint(table)
 
 
+@dataclass_json
+@dataclass
 class HistogramData:
     '''
     Class for storing all the data necessary to construct a histogram, like we see in the middle plots.
@@ -123,42 +190,48 @@ class HistogramData:
         bar_values (List[float]): The value of each bar in the histogram.
         tick_vals (List[float]): The tick values we want to use for the histogram.
     '''
-    def __init__(
-        self,
+    bar_heights: List[float] = field(default_factory=list)
+    bar_values: List[float] = field(default_factory=list)
+    tick_vals: List[float] = field(default_factory=list)
+    line_posn: Optional[List[float]] = None
+    line_text: Optional[str] = None
+
+    @classmethod
+    def from_data(
+        cls,
         data: Tensor,
         n_bins: int,
         tickmode: str,
         line_posn: Optional[List[float]] = None,
         line_text: Optional[str] = None,
-    ):
-        self.line_posn = line_posn
-        self.line_text = line_text
-
+    ) -> "HistogramData":
+        '''
+        Returns a HistogramData object, with data computed from the inputs. This is to support the goal of only storing
+        the minimum necessary data (and making it serializable, for JSON saving).
+        '''
+        # There might be no data, if the feature never activates
         if data.numel() == 0:
-            self.bar_heights = []
-            self.bar_values = []
-            self.tick_vals = []
-            return
+            return HistogramData()
 
         # Get min and max of data
         max_value = data.max().item()
         min_value = data.min().item()
 
-        # divide range up into 40 bins
+        # Divide range up into 40 bins
         bin_size = (max_value - min_value) / n_bins
         bin_edges = torch.linspace(min_value, max_value, n_bins + 1)
-        # calculate the heights of each bin
-        bar_heights = torch.histc(data, bins=n_bins)
-        bar_values = bin_edges[:-1] + bin_size / 2
+        # Calculate the heights of each bin
+        bar_heights = torch.histc(data, bins=n_bins).int().tolist()
+        bar_values = [round(x, 5) for x in (bin_edges[:-1] + bin_size / 2).tolist()]
         
-        # choose tickvalues (super hacky and terrible, should improve this)
+        # Choose tickvalues (super hacky and terrible, should improve this!)
         assert tickmode in ["ints", "5 ticks"]
 
         if tickmode == "ints":
             top_tickval = int(max_value)
             tick_vals = torch.arange(0, top_tickval + 1, 1).tolist()
         elif tickmode == "5 ticks":
-            # ticks chosen in multiples of 0.1, so we have 3 on the longer side
+            # Ticks chosen in multiples of 0.1, so we have 3 on the longer side
             if max_value > -min_value:
                 tickrange = 0.1 * int(1e-4 + max_value / (3 * 0.1)) + 1e-6
                 num_positive_ticks = 3
@@ -174,54 +247,73 @@ class HistogramData:
             )
             tick_vals = [round(t, 1) for t in tick_vals]
 
-        self.bar_heights = bar_heights.tolist()
-        self.bar_values = bar_values.tolist()
-        self.tick_vals = tick_vals
+        return HistogramData(
+            bar_heights = bar_heights,
+            bar_values = bar_values,
+            tick_vals = tick_vals,
+            line_posn = line_posn,
+            line_text = line_text,
+        )
 
 
 
+@dataclass_json
 @dataclass
 class SequenceData:
     '''
-    Class to store data for a given sequence, which will be turned into a JavaScript visulisation. See here for a
-    diagram of how this class fits into the overall visualization: https://shorturl.at/rCQ04
+    Class to store data for a given sequence, which will be turned into an HTML visulisation. See the README for a
+    diagram of how this class fits into the overall visualization.
 
     Always-visible data:
-        str_tokens: list of string tokens in the sequence
+        token_ids: list of token IDs in the sequence
         feat_acts: sizes of activations on this sequence
         contribution_to_loss: effect on loss of this feature, for this particular token (neg = helpful)
 
     Data which is visible on hover:
-        top5_str_tokens: list of the top 5 logit-boosted tokens by this feature
-        top5_logit_changes: list of the corresponding 5 changes in logits for those tokens
-        bottom5_str_tokens: list of the bottom 5 logit-boosted tokens by this feature
-        bottom5_logit_changes: list of the corresponding 5 changes in logits for those tokens
+        top5_token_ids: list of the top 5 logit-boosted tokens by this feature
+        top5_logits: list of the corresponding 5 changes in logits for those tokens
+        bottom5_token_ids: list of the bottom 5 logit-boosted tokens by this feature
+        bottom5_logits: list of the corresponding 5 changes in logits for those tokens
+
+    Metadata:
+        filter: if this is true, we filter out the data which is zero (this saves space when we save the data).
     '''
-    token_ids: List[str]
-    feat_acts: List[float]
-    contribution_to_loss: List[float]
-    top5_token_ids: Optional[List[List[str]]] = None
-    top5_logit_contributions: Optional[List[List[float]]] = None
+    token_ids: List[int] = field(default_factory=list)
+    feat_acts: List[float] = field(default_factory=list)
+    contribution_to_loss: List[float] = field(default_factory=list)
+    top5_token_ids: Optional[List[List[int]]] = None
+    top5_logits: Optional[List[List[float]]] = None
     bottom5_token_ids: Optional[List[List[str]]] = None
-    bottom5_logit_contributions: Optional[List[List[float]]] = None
+    bottom5_logits: Optional[List[List[float]]] = None
+    filter: bool = False
+
+    def __post_init__(self) -> None:
+        '''
+        Filters the list of floats and ints, by removing any elements which are zero. Note - the absolute values of the
+        floats are monotonic non-increasing, so we can assume that all the elements we keep will be the first elements
+        of their respective lists.
+
+        Also reduces precisions of feature activations & logits to 4dp.
+        '''
+        if self.filter:
+            self.feat_acts = [round(f, 4) for f in self.feat_acts]
+            self.top5_logits, self.top5_token_ids = self._filter(self.top5_logits, self.top5_token_ids)
+            self.bottom5_logits, self.bottom5_token_ids = self._filter(self.bottom5_logits, self.bottom5_token_ids)
+
+    def _filter(self, float_list: Optional[List[List[float]]], int_list: Optional[List[List[int]]]):
+        if float_list is None:
+            return None, None
+        
+        float_list = [[round(f, 4) for f in floats if abs(f) > 1e-6] for floats in float_list]
+        int_list = [ints[:len(floats)] for ints, floats in zip(int_list, float_list)]
+
+        for floats, ints in zip(float_list, int_list):
+            assert len(floats) == len(ints), "Expected the same number of floats and ints"
+
+        return float_list, int_list
 
     def __len__(self) -> int:
         return len(self.token_ids)
-
-    def __str__(self) -> str:
-        return f"SequenceData({''.join(self.token_ids)})"
-    
-    def __post_init__(self) -> None:
-        '''Filters down the data, by deleting the "on hover" information if the activations are zero.'''
-        self.top5_logit_contributions, self.top5_token_ids = self._filter(self.top5_logit_contributions, self.top5_token_ids)
-        self.bottom5_logit_contributions, self.bottom5_token_ids = self._filter(self.bottom5_logit_contributions, self.bottom5_token_ids)
-
-    def _filter(self, float_list: List[List[float]], int_list: List[List[str]]):
-        if float_list is None:
-            return None, None
-        float_list = [[f for f in floats if f != 0] for floats in float_list]
-        int_list = [[i for i, f in zip(ints, floats)] for ints, floats in zip(int_list, float_list)]
-        return float_list, int_list
     
     def get_html(
         self,
@@ -229,10 +321,21 @@ class SequenceData:
         hovertext: bool = True,
         bold_idx: Optional[int] = None,
         overflow_x: Literal["break", None] = None,
-        max_act_color: Optional[int] = None,
+        max_act_color: Optional[float] = None,
     ) -> str:
         '''
-        hovertext determines whether we add hovertext to this HTML (yes if the sequence is on its own, no otherwise).
+        Args:
+            vocab_dict: Dict[int, str]
+                Used for mapping token IDs to string tokens
+            hovertext: bool
+                Determines if we add hovertext to this HTML (yes if the sequence is on its own, no otherwise)
+            bold_idx: Optional[int]
+                If supplied, then we bold the token at this index. Default is the middle token
+            overflow_x: Literal["break", None]
+                If supplied, then we use this as the value for the overflow-x CSS property (useful for prompt-centric
+                view, where we wrap user-input prompt)
+            max_act_color: Optional[float]:
+                We use this as the most extreme value, for coloring tokens by activation
         '''
         html_str = generate_seq_html(
             vocab_dict,
@@ -242,28 +345,27 @@ class SequenceData:
             bold_idx = bold_idx if bold_idx is not None else len(self.token_ids) // 2, # bold the middle token by default
             pos_ids = self.top5_token_ids,
             neg_ids = self.bottom5_token_ids,
-            pos_val = self.top5_logit_contributions,
-            neg_val = self.bottom5_logit_contributions,
+            pos_val = self.top5_logits,
+            neg_val = self.bottom5_logits,
             overflow_x = overflow_x,
             max_act_color = max_act_color,
         )
-        if hovertext:
-            html_str += f"<script>{JS_HOVERTEXT_SCRIPT}</script>"
+        if hovertext: html_str += f"<script>{JS_HOVERTEXT_SCRIPT}</script>"
         return html_str
 
 
-
+@dataclass_json
+@dataclass
 class SequenceGroupData:
     '''
-    Class to store data for a given sequence group, which will be turned into a JavaScript visulisation. See here for a
-    diagram of how this class fits into the overall visualization: https://shorturl.at/rCQ04
+    Class to store data for a given sequence group, which will be turned into an HTML visulisation. See the README for a
+    diagram of how this class fits into the overall visualization.
 
     All the arguments are equivalent to those for SequenceData (except for `title` which is the header of the group),
     so see the SequenceData class for more information.
     '''
-    def __init__(self, title: str, seq_data: List[SequenceData]):
-        self.title: str = title
-        self.seq_data: list[SequenceData] = seq_data
+    title: str = ""
+    seq_data: List[SequenceData] = field(default_factory=list)
     
     def __len__(self) -> int:
         return len(self.seq_data)
@@ -273,11 +375,9 @@ class SequenceGroupData:
         vocab_dict: Dict[int, str],
         group_size: Optional[int] = None,
         hovertext: bool = True,
-        overflow_x: Literal["scroll", "hidden"] = "scroll",
-        width: Optional[int] = 420,
+        width: Optional[int] = 440,
         max_act_color: Optional[float] = None,
-        margin: bool = True,
-    ):
+    ) -> str:
         '''
         This creates a single group of sequences, i.e. title plus some number of vertically stacked sequences.
 
@@ -290,9 +390,6 @@ class SequenceGroupData:
                 This adds the JavaScript hovertext. If this is the only sequence group in our visualization then we need
                 to add the hovertext, but if we're generating multiple sequence groups then we add the hovertext at a
                 higher level.
-            overflow_x: Literal["scroll", "hidden"]
-                If "scroll", then we add a horizontal scrollbar to the div containing the sequences. If "hidden", then
-                we don't add a scrollbar (and the sequences will be cut off if they're too long).
             width: Optional[int]
                 If not None, then the sequence data will be wrapped in a div with this width. If None, then the
                 sequences will be full-length (i.e. each column containing sequences will have variable width, to match
@@ -300,17 +397,24 @@ class SequenceGroupData:
             max_act_color: Optional[float]
                 If supplied, then we use this as the most extreme value, for coloring the tokens by activation value.
         '''
+        # Get the styles for the div
         width_style: str = "" if width is None else f"width:{width}px;"
-        margin_style: str = f"margin-bottom:{10 if margin else 0}px;"
-        html_str: str = f'<h4>{self.title}</h4><div class="seq-{overflow_x}" style="{width_style}{margin_style}">'
-        
-        seqs: list[SequenceData] = self.seq_data if group_size is None else self.seq_data[:group_size]
-        for seq in seqs:
-            # We return the HTML for seq without hovertext JavaScript (cause we only need to do hovertext once)
-            html_str += seq.get_html(vocab_dict=vocab_dict, hovertext=False, max_act_color=max_act_color)
-        
-        html_str += "</div>"
 
+        # Get the data that will go into the div
+        html_contents = "".join([
+            seq.get_html(vocab_dict, hovertext=False, max_act_color=max_act_color)
+            for seq in self.seq_data[:group_size]
+        ])
+
+        # Assemble the full div
+        html_str: str = f'''
+<h4>{self.title}</h4>
+
+<div class="seq-scroll" style="{width_style}">
+    {html_contents}
+</div>
+'''
+        # If necessary, add hovertext
         if hovertext:
             html_str += f"<script>{JS_HOVERTEXT_SCRIPT}</script>"
 
@@ -318,16 +422,16 @@ class SequenceGroupData:
 
 
 
-
+@dataclass_json
+@dataclass
 class SequenceMultiGroupData:
     '''
-    Class to store data for multiple sequence groups, which will be turned into a JavaScript visulisation. See here for
-    a diagram of how this class fits into the overall visualization: https://shorturl.at/rCQ04
+    Class to store data for multiple sequence groups, which will be turned into an HTML visulisation. See the README for
+    a diagram of how this class fits into the overall visualization.
 
     See the SequenceGroupData and SequenceData classes for more information on the arguments.
     '''
-    def __init__(self, seq_group_data: list[SequenceGroupData]) -> None:
-        self.seq_group_data: list[SequenceGroupData] = seq_group_data
+    seq_group_data: List[SequenceGroupData] = field(default_factory=list)
 
     def __getitem__(self, idx: int) -> SequenceGroupData:
         return self.seq_group_data[idx]
@@ -335,7 +439,7 @@ class SequenceMultiGroupData:
     def get_html(
         self,
         vocab_dict: Dict[int, str],
-        width: Optional[int] = 420,
+        width: Optional[int] = 440,
         height: Optional[int] = None,
         hovertext: bool = True,
     ) -> str:
@@ -354,9 +458,8 @@ class SequenceMultiGroupData:
                 max_act_color = max_act_color,
                 width = width,
                 hovertext = False,
-                margin = False, # depreciated: used to be False for only first group, now is False for all of them
             )
-            for i, sequences_group in enumerate(self.seq_group_data)
+            for sequences_group in self.seq_group_data
         ]
 
         # Create a grid item for the first group, plus a grid item for every 3 quantiles, until we've used them all
@@ -371,67 +474,73 @@ class SequenceMultiGroupData:
 
 
 
-
+@dataclass_json
+@dataclass
 class LeftTablesData:
     '''
     Class to store all the data used in the left-hand tables (i.e. neuron alignment, correlated neurons & features).
 
     Args:
-        neuron_alignment: Tuple[TopK, Arr]
-            First element is the topk by value (i.e. first two cols of first table), second is the % L1 norm (third col).
-        
-        neurons_correlated: Tuple[TopK, Arr]
-            TopK correlated neurons by pearson corr coef, and the cosine sim values of those topk.
+        neuron_alignment...
+            The data for the neuron alignment table (each of its 3 columns). In other words, the data containing which
+            neurons in the transformer the encoder feature is most aligned with.
 
-        b_features_correlated: Tuple[TopK, Arr]
-            Same as neurons_correlated, but for the encoder-B features.
+        correlated_neurons...
+            The data for the correlated neurons table (each of its 3 columns). In other words, the data containing which
+            neurons in the transformer are most correlated with the encoder feature.
 
-    In other words, each of these 3 inputs creates one of the 3 tables: the TopK object gives us indices and values (the
-    first two columns of the table), and the Arr object gives us the third column.
+        correlated_features...
+            The data for the correlated features table (each of its 3 columns). In other words, the data containing
+            which features in encoder-B are most correlated with those in the original encoder.
     '''
-    def __init__(self, neuron_alignment, neurons_correlated, b_features_correlated):
-        self.neuron_alignment: Tuple[TopK, Arr] = neuron_alignment
-        self.neurons_correlated: Tuple[TopK, Arr] = neurons_correlated
-        self.b_features_correlated: Tuple[TopK, Arr] = b_features_correlated
+    neuron_alignment_indices: List[int] = field(default_factory=list)
+    neuron_alignment_values: List[float] = field(default_factory=list)
+    neuron_alignment_l1: List[float] = field(default_factory=list)
+    correlated_neurons_indices: List[int] = field(default_factory=list)
+    correlated_neurons_pearson: List[float] = field(default_factory=list)
+    correlated_neurons_l1: List[float] = field(default_factory=list)
+    correlated_features_indices: List[int] = field(default_factory=list)
+    correlated_features_pearson: List[float] = field(default_factory=list)
+    correlated_features_l1: List[float] = field(default_factory=list)
 
     def get_html(self) -> str:
         '''
         The `get_html` function returns the HTML for the left-hand tables, wrapped in a 'grid-item' div.
         '''
-        # Need to deal with b_features_correlated separately, in case it's None
-        kwargs = {}
-        if self.b_features_correlated is not None:
-            kwargs.update(dict(
-                correlated_features_indices = self.b_features_correlated[0].indices.tolist(),
-                correlated_features_pearson = self.b_features_correlated[0].values.tolist(),
-                correlated_features_l1 = self.b_features_correlated[1].tolist(),
-            ))
-
         # Generate & return the left-hand HTML tables
         html_str: str = generate_left_tables_html(
-            neuron_alignment_indices = self.neuron_alignment[0].indices.tolist(),
-            neuron_alignment_values = self.neuron_alignment[0].values.tolist(),
-            neuron_alignment_l1 = self.neuron_alignment[1].tolist(),
-            correlated_neurons_indices = self.neurons_correlated[0].indices.tolist(),
-            correlated_neurons_pearson = self.neurons_correlated[0].values.tolist(),
-            correlated_neurons_l1 = self.neurons_correlated[1].tolist(),
-            **kwargs,
+            self.neuron_alignment_indices,
+            self.neuron_alignment_values,
+            self.neuron_alignment_l1,
+            self.correlated_neurons_indices,
+            self.correlated_neurons_pearson,
+            self.correlated_neurons_l1,
+            self.correlated_features_indices,
+            self.correlated_features_pearson,
+            self.correlated_features_l1,
         )
         return grid_item(html_str)
 
 
 
-
+@dataclass_json
+@dataclass
 class MiddlePlotsData:
     '''
     Class to store all the data used in the middle plots (i.e. activation density, logits table & histogram).
 
     Inputs:
-        bottom10_logits: TopK
-            For the most negative logits, used to generate the logits table.
+        bottom10_token_ids: List[int]
+            The token IDs corresponding to the 10 most negative logits.
+        
+        bottom10_logits: List[float]
+            The 10 most negative logits (corresponding to the token IDs above).
 
-        top10_logits: TopK
-            For the most positive logits, used to generate the logits table.
+        top10_token_ids: List[int]
+            The token IDs corresponding to the 10 most positive logits.
+
+        top10_logits: List[float]
+            The 10 most positive logits (corresponding to the token IDs above).
 
         logits_histogram_data: HistogramData
             Used to generate the logits histogram.
@@ -442,24 +551,17 @@ class MiddlePlotsData:
         frac_nonzero: float
             Used to generate the title of the activation density histogram.
     '''
-    def __init__(
-        self,
-        bottom10_logits,
-        top10_logits,
-        logits_histogram_data, 
-        freq_histogram_data,
-        frac_nonzero,
-    ):
-        self.bottom10_logits: TopK = bottom10_logits
-        self.top10_logits: TopK = top10_logits
-        self.logits_histogram_data: HistogramData = logits_histogram_data
-        self.freq_histogram_data: HistogramData = freq_histogram_data
-        self.frac_nonzero: float = frac_nonzero
+    bottom10_token_ids: List[int]
+    bottom10_logits: List[float]
+    top10_token_ids: List[int]
+    top10_logits: List[float]
+    logits_histogram_data: HistogramData
+    freq_histogram_data: HistogramData
+    frac_nonzero: float
 
     def get_html(
         self,
         vocab_dict: Dict[int, str],
-        make_grid_item: bool = True,
         compact: bool = False,
         histogram_line_idx: Optional[int] = None,
     ) -> str:
@@ -467,10 +569,6 @@ class MiddlePlotsData:
         Args:
             vocab_dict: Dict[int, str]
                 Used for converting token indices to string tokens.
-
-            make_grid_item: bool
-                Whether to wrap the HTML in a 'grid-item' div.
-
             compact: bool
                 If True, then we make it horizontally compact (by putting the table and charts side by side).
 
@@ -490,16 +588,16 @@ class MiddlePlotsData:
             ))
 
         # Get the negative and positive background values (darkest when equals max abs). Easier when in tensor form
-        max_value = max(np.absolute(self.bottom10_logits.values).max(), np.absolute(self.top10_logits.values).max())
-        neg_bg_values = np.absolute(self.bottom10_logits.values) / max_value
-        pos_bg_values = np.absolute(self.top10_logits.values) / max_value
+        max_value = max(np.absolute(self.bottom10_logits).max(), np.absolute(self.top10_logits).max())
+        neg_bg_values = np.absolute(self.bottom10_logits) / max_value
+        pos_bg_values = np.absolute(self.top10_logits) / max_value
 
         html_str = generate_middle_plots_html(
-            neg_str = to_str_tokens(vocab_dict, self.bottom10_logits.indices),
-            neg_values = self.bottom10_logits.values.tolist(),
+            neg_str = to_str_tokens(vocab_dict, self.bottom10_token_ids),
+            neg_values = self.bottom10_logits,
             neg_bg_values = neg_bg_values,
-            pos_str = to_str_tokens(vocab_dict, self.top10_logits.indices),
-            pos_values = self.top10_logits.values.tolist(),
+            pos_str = to_str_tokens(vocab_dict, self.top10_token_ids),
+            pos_values = self.top10_logits,
             pos_bg_values = pos_bg_values,
 
             freq_hist_data_bar_heights = self.freq_histogram_data.bar_heights,
@@ -533,6 +631,7 @@ class MiddlePlotsData:
 
 
 
+@dataclass_json
 @dataclass
 class PromptData:
     '''
@@ -544,16 +643,16 @@ class PromptData:
         prompt_data: Dict[str, SequenceGroupData]
             This contains all the data which will be used to construct the sequences (at the bottom of the column).
 
-        sequence_data: Dict[str, SequenceGroupData]
-            This contains all the data which will be used to construct the sequences (at the bottom of the column).
-
         middle_plots_data: MiddlePlotsData
             This contains all the data which will be used to construct the middle plots (act density histogram, logits
             tables, and logits histogram).
+
+        sequence_data: Dict[str, SequenceGroupData]
+            This contains all the data which will be used to construct the sequences (at the bottom of the column).
     '''
     prompt_data: SequenceData
-    sequence_data: SequenceGroupData
     middle_plots_data: MiddlePlotsData
+    sequence_data: SequenceGroupData
 
     def get_html(
         self,
@@ -561,7 +660,7 @@ class PromptData:
         vocab_dict: Dict[int, str],
         hovertext: bool = True,
         bold_idx: Optional[int] = None,
-        width: Optional[int] = 420,
+        width: Optional[int] = 440,
         histogram_line_idx: Optional[int] = None,
     ) -> str:
         '''
@@ -571,13 +670,15 @@ class PromptData:
 
         html_contents = f"""
 <h3>{title}</h3>
+
 {self.prompt_data.get_html(vocab_dict, hovertext, bold_idx, overflow_x="break")}
-{self.middle_plots_data.get_html(vocab_dict, make_grid_item=False, histogram_line_idx=histogram_line_idx)}
+{self.middle_plots_data.get_html(vocab_dict, histogram_line_idx=histogram_line_idx)}
 {self.sequence_data.get_html(vocab_dict, group_size=10, width=seq_width, hovertext=hovertext)}
 """
         return grid_item(html_contents, width=width)
         
 
+@dataclass_json
 @dataclass
 class MultiPromptData:
     '''
@@ -595,17 +696,18 @@ class MultiPromptData:
 
         scores_dict:
             Maps every combination of (scoring metric, sequence posn) to a list of highest-scoring features.
-            keys: Tuple[str, int]
-                The first element is the scoring metric (e.g. "act_size", "act_quantile", "loss_effect"), and the
-                second element is the sequence position (0-indexed).
-            values: Tuple[TopK, List[str]]
-                The first element is the topk object (indices are the feature indices, values are the scores). The
-                second element is a string or list of strings, containing prompt formatting.
+
+            keys: str
+                Concatenated (score_name, seq_pos), separated by a dash.
+                E.g. "act_size-0", "act_quantile-1". "loss_effect-2".
+
+            values: Tuple[List[int], List[str]]
+                The 2 elements are the feature indices, and scores (as strings).
 
     '''
-    prompt_str_toks: List[str]
-    prompt_data_dict: Dict[int, PromptData]
-    scores_dict: Dict[Tuple[str, str], Tuple[TopK, List[str]]]
+    prompt_str_toks: List[str] = field(default_factory=list)
+    prompt_data_dict: Dict[int, PromptData] = field(default_factory=dict)
+    scores_dict: Dict[str, Tuple[List[int], List[str]]] = field(default_factory=dict)
 
     def __getitem__(self, idx: int) -> PromptData:
         return self.prompt_data_dict[idx]
@@ -613,63 +715,66 @@ class MultiPromptData:
     def get_html(
         self,
         seq_pos: int,
-        str_score: Literal["act_size", "act_quantile", "loss_effect"],
+        score_name: Literal["act_size", "act_quantile", "loss_effect"],
         vocab_dict: Dict[int, str],
-        width: Optional[int] = 420,
+        width: Optional[int] = 440,
     ) -> str:
         
-        # Check arguments are valid, and if they are 
-        assert str_score in ["act_size", "act_quantile", "loss_effect"], f"Invalid str_score: {str_score!r}"
+        # Check arguments are valid, and if they are then get the score title (i.e. the how it'll appear in HTML)
+        assert score_name in ["act_size", "act_quantile", "loss_effect"], f"Invalid score_name: {score_name!r}"
         assert 0 <= seq_pos < len(self.prompt_str_toks)
-        if str_score == "act_size":
-            str_score_formatted = "Activation Size"
-        elif str_score == "act_quantile":
-            str_score_formatted = "Activation Quantile"
-        elif str_score == "loss_effect":
-            str_score_formatted = "Loss Effect"
+        if score_name == "loss_effect":
             assert seq_pos > 0, "Can't look at the loss effect on the first token in the prompt."
+        score_title = {
+            "act_size": "Activation Size",
+            "act_quantile": "Activation Quantile",
+            "loss_effect": "Loss Effect",
+        }[score_name]
 
-        
-        scores, formatting = self.scores_dict[(str_score, seq_pos)]
-        if isinstance(formatting, str):
-            formatting = [formatting] * len(scores)
-        k = len(scores)
+        key = f"{score_name}-{seq_pos}"
+        feature_indices, scores_str = self.scores_dict[key]
+        k = len(feature_indices)
 
         grid_items = ""
 
         # Iterate through each of the features we're creating a box for
-        for (feat, score, fmt) in zip(scores.indices.tolist(), scores.values.tolist(), formatting):
+        for (feature_idx, score_str) in zip(feature_indices, scores_str):
 
             # Add the HTML box for this feature
-            grid_items += self[feat].get_html(
-                title = f"Feature #<a href='demo'>{feat}</a><br>{str_score_formatted} = {score:{fmt}}<br>",
+            grid_items += self[feature_idx].get_html(
+                title = f"Feature #<a href='demo'>{feature_idx}</a><br>{score_title} = {score_str}<br>",
                 vocab_dict = vocab_dict,
                 hovertext = False,
                 bold_idx = seq_pos,
                 width = width,
-                histogram_line_idx = seq_pos - 1 if (str_score == "loss_effect") else seq_pos,
+                histogram_line_idx = seq_pos - 1 if (score_name == "loss_effect") else seq_pos,
             )
 
         # Change the ids from e.g. `histogram-logits` to `histogram-logits-1`, `histogram-logits-2`, ... so that the JavaScript works
+        # TODO - change this to be something less hacky?
         for histogram_id in ["histogram-logits", "histogram-acts"]:
             k_list = [i for i in range(1, k+1) for _ in range(2)]
             grid_items = re.sub(histogram_id, lambda m: f"{histogram_id}-{k_list.pop(0)}", grid_items)
 
         html_str = f"""
 <style>
-{CSS}
+    {CSS}
 </style>
+
 <div class='grid-container'>
     {grid_items}
 </div>
+
 <script>
     {JS_HOVERTEXT_SCRIPT}
 </script>
 """
         # This saves a lot of space, by removing the hidden items from display
+        # TODO - this is also kinda hacky and should be improved
         pattern = r'<div class="half-width-container" style="display: none;">(.*?)</div>'
         html_str = re.sub(pattern, "", html_str, flags=re.DOTALL)
 
+        # TODO - debug why I need to do these things
         html_str = html_str.replace("Ċ", "&bsol;n")
         html_str = adjust_hovertext(html_str)
         return html_str
@@ -678,6 +783,7 @@ class MultiPromptData:
 
 
 
+@dataclass_json
 @dataclass
 class FeatureData:
     '''
@@ -712,11 +818,11 @@ class FeatureData:
     middle_plots_data: MiddlePlotsData
 
     feature_idx: int
-    vocab_dict: Dict[int, str]
     fvp: FeatureVisParams
 
     def get_html(
         self,
+        vocab_dict: Dict[int, str],
         split_scripts: bool = False,
     ) -> str:
         '''
@@ -732,7 +838,7 @@ class FeatureData:
         '''
         # Get sequence data HTML
         sequence_html: str = self.sequence_data.get_html(
-            self.vocab_dict,
+            vocab_dict,
             width = self.fvp.seq_width,
             height = self.fvp.seq_height,
             hovertext = True,
@@ -741,10 +847,10 @@ class FeatureData:
         # Get other HTML (split depending on whether we include the left tables or not)
         if self.fvp.include_left_tables:
             left_tables_html: str = self.left_tables_data.get_html()
-            middle_plots_data: str = self.middle_plots_data.get_html(self.vocab_dict)
+            middle_plots_data: str = self.middle_plots_data.get_html(vocab_dict)
         else:
             left_tables_html = ""
-            middle_plots_data: str = self.middle_plots_data.get_html(self.vocab_dict, compact=True)
+            middle_plots_data: str = self.middle_plots_data.get_html(vocab_dict, compact=True)
 
         # Get the CSS, and make appropriate edits to it
         css = CSS
@@ -780,23 +886,19 @@ class FeatureData:
         else:
             return html_str
     
-
-
+@dataclass_json
+@dataclass
 class MultiFeatureData:
     '''
     Class for storing data for multiple different features, as well as data which is used to sort the features (for now
     this just means quantile data on the feature activations and loss effects).
     '''
-    feature_data_dict: Dict[int, FeatureData]
-    feature_act_quantiles: QuantileCalculator
+    feature_data_dict: Dict[int, FeatureData] = field(default_factory=dict)
+    feature_act_quantiles: QuantileCalculator = field(default_factory=QuantileCalculator)
 
     # TODO - think about adding loss_quantiles: QuantileCalculator
     # They're potentially slower because we need to compute logits-after-ablation for all tokens rather than just the
     # tokens in our sequence groups (by default we don't compute logits for all tokens)
-
-    def __init__(self, feature_data_dict=None, feature_act_quantiles=None):
-        self.feature_data_dict = {} if feature_data_dict is None else feature_data_dict
-        self.feature_act_quantiles = QuantileCalculator() if feature_act_quantiles is None else feature_act_quantiles
 
     def __getitem__(self, idx: int) -> FeatureData:
         return self.feature_data_dict[idx]
@@ -809,13 +911,15 @@ class MultiFeatureData:
 
     def items(self) -> List[Tuple[int, FeatureData]]:
         return list(self.feature_data_dict.items())
+    
+    def __len__(self) -> int:
+        return len(self.feature_data_dict)
 
     def update(self, other: "MultiFeatureData") -> None:
         '''
         Updates a MultiFeatureData object with the data from another MultiFeatureData object.
         '''
         if other is None: return
-        # assert isinstance(other, MultiFeatureData), f"Can only update with another MultiFeatureData object, not {type(other)}"
         self.feature_data_dict.update(other.feature_data_dict)
         self.feature_act_quantiles.update(other.feature_act_quantiles)
 
