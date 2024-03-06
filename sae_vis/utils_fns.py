@@ -8,7 +8,6 @@ from torch import Tensor
 import numpy as np
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from tqdm import tqdm
-from transformers import GPT2TokenizerFast, GPTNeoXTokenizerFast, AutoTokenizer
 from transformer_lens import utils
 
 
@@ -126,7 +125,7 @@ def create_vocab_dict(tokenizer: PreTrainedTokenizerFast) -> Dict[int, str]:
     '''
     Creates a vocab dict by replacing all the annoying special tokens with their HTML representations.
     '''
-    vocab_dict: Dict[str, int] = tokenizer.vocab
+    vocab_dict: Dict[int, str] = tokenizer.vocab
     vocab_dict = {v: process_str_tok(k) for k, v in vocab_dict.items()}
     return vocab_dict
 
@@ -150,7 +149,7 @@ def process_str_tok(str_tok: str) -> str:
 
 
 
-def to_str_tokens(vocab_dict: Dict[int, str], tokens: Union[int, torch.Tensor]):
+def to_str_tokens(vocab_dict: Union[Dict[int, str], PreTrainedTokenizerFast], tokens: Union[int, torch.Tensor]):
     '''
     Helper function which converts tokens to their string representations, but (if tokens is a tensor) keeps
     them in the same shape as the original tensor (i.e. nested lists).

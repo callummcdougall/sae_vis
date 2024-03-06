@@ -1,4 +1,5 @@
 import numpy as np
+from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from typing import List
 import torch
 from torch import Tensor
@@ -217,7 +218,7 @@ class SequenceData:
     
     def get_html(
         self,
-        vocab_dict: Dict[int, str],
+        vocab_dict: Union[Dict[int, str], PreTrainedTokenizerFast],
         hovertext: bool = True,
         bold_idx: Optional[int] = None,
         overflow_x: Literal["break", None] = None,
@@ -260,7 +261,7 @@ class SequenceGroupData:
     
     def get_html(
         self,
-        vocab_dict: Dict[int, str],
+        vocab_dict: Union[Dict[int, str], PreTrainedTokenizerFast],
         group_size: Optional[int] = None,
         hovertext: bool = True,
         overflow_x: Literal["scroll", "hidden"] = "scroll",
@@ -319,7 +320,7 @@ class SequenceMultiGroupData:
 
     def get_html(
         self,
-        vocab_dict: Dict[int, str],
+        vocab_dict: Union[Dict[int, str], PreTrainedTokenizerFast],
         hovertext: bool = True
     ) -> str:
         '''
@@ -431,7 +432,7 @@ class MiddlePlotsData:
 
     def get_html(
         self,
-        vocab_dict: Dict[int, str],
+        vocab_dict: Union[Dict[int, str], PreTrainedTokenizerFast],
         grid_item: bool = True,
         compact: bool = False,
         histogram_line_idx: Optional[int] = None,
@@ -531,7 +532,7 @@ class PromptData:
     def get_html(
         self,
         title: str,
-        vocab_dict: Dict[int, str],
+        vocab_dict: Union[Dict[int, str], PreTrainedTokenizerFast],
         hovertext: bool = True,
         bold_idx: Optional[int] = None,
         width: Optional[int] = 420,
@@ -589,7 +590,7 @@ class MultiPromptData:
         self,
         seq_pos: int,
         str_score: Literal["act_size", "act_quantile", "loss_effect"],
-        vocab_dict: Dict[int, str],
+        vocab_dict: Union[Dict[int, str], PreTrainedTokenizerFast],
         width: Optional[int] = 420,
     ) -> str:
         

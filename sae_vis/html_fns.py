@@ -1,5 +1,6 @@
 from matplotlib import colors
 import numpy as np
+from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from typing import List, Optional, Tuple, Literal
 from pathlib import Path
 import re
@@ -59,7 +60,7 @@ BG_COLOR_MAP = colors.LinearSegmentedColormap.from_list("bg_color_map", ["white"
 
 
 def generate_tok_html(
-    vocab_dict: dict,
+    vocab_dict: Union[Dict[int, str], PreTrainedTokenizerFast],
     
     this_token: str,
     underline_color: str,
@@ -140,7 +141,7 @@ def generate_tok_html(
 
 
 def generate_seq_html(
-    vocab_dict: dict,
+    vocab_dict: Union[Dict[int, str], PreTrainedTokenizerFast],
     token_ids: List[str],
     feat_acts: List[float],
     contribution_to_loss: List[float],
