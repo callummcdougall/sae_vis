@@ -8,7 +8,7 @@ There are 2 main sections of this readme: **views** (which explains the 2 differ
 
 # Views
 
-## Feature-centric view
+## [Feature-centric view](https://github.com/callummcdougall/sae_vis/blob/main/feature_vis_demo_repo.html)
 
 Here is an example output (with some discussion). Note that I'm assuming basic familiarity with what SAEs and features are, if you don't have this then I'd recommend reading some prerequisites (e.g. sections 1, 6 and 7 of the [ARENA exercises](https://arena3-chapter1-transformer-interp.streamlit.app/[1.4]_Superposition_&_SAEs)).
 
@@ -18,7 +18,7 @@ Feature #8 (below) seems to be a fuzzy skip trigram, with the pattern being `(dj
 
 <img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-demo-1.png" width="1200">
 
-## Prompt-centric view
+## [Prompt-centric view](https://github.com/callummcdougall/sae_vis/blob/main/prompt_vis_demo_repo.html)
 
 Here is a prompt-centric visualization, containing some django syntax. The features are sorted by their loss effect on the `django` token (i.e. how much the output of this particular feature changes the logprobs for the correct token). We can see that feature #8 from above is by far the most loss-reducing. We can also sort the features by activation size or activation quantile, this again shows that feature #8 is dominant.
 
