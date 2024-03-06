@@ -141,7 +141,7 @@ class FeatureVisParams:
     other_groups_size: int = 5
 
     border: bool = True
-    seq_width: Optional[int] = 425
+    seq_width: Optional[int] = 420
     seq_height: Optional[int] = None
 
     seed: Optional[int] = 0
@@ -175,11 +175,11 @@ class HistogramData:
         tickmode: str
             How we want to choose the tick values for the histogram. This is pretty hacky atm.
         
-        line_posn: Optional[Union[float, List[float]]]
+        line_posn: List[float]
             The possible positions of vertical lines we want to put on the histogram. This is a list because in the
             prompt-centric visualisation there will be a different line for each token.
-        line_text: Optional[Union[str]]
-            The text we want to display on the line.
+        line_text: List[str]
+            The text we want to display on the line. Again this is a list, corresponding to the line_posn list.
 
     Unlike many other classes here, this class actually does computation on its inputs. This is because
     we don't need to store the entire `data` tensor, only the height of each bar. This is why we eventually
@@ -192,8 +192,8 @@ class HistogramData:
     bar_heights: List[float] = field(default_factory=list)
     bar_values: List[float] = field(default_factory=list)
     tick_vals: List[float] = field(default_factory=list)
-    line_posn: Optional[List[float]] = None
-    line_text: Optional[str] = None
+    line_posn: List[float] = field(default_factory=list)
+    line_text: List[str] = field(default_factory=list)
 
     @classmethod
     def from_data(
@@ -201,8 +201,8 @@ class HistogramData:
         data: Tensor,
         n_bins: int,
         tickmode: str,
-        line_posn: Optional[List[float]] = None,
-        line_text: Optional[str] = None,
+        line_posn: List[float] = [],
+        line_text: List[str] = [],
     ) -> "HistogramData":
         '''
         Returns a HistogramData object, with data computed from the inputs. This is to support the goal of only storing
@@ -374,7 +374,7 @@ class SequenceGroupData:
         vocab_dict: Dict[int, str],
         group_size: Optional[int] = None,
         hovertext: bool = True,
-        width: Optional[int] = 425,
+        width: Optional[int] = 420,
         max_act_color: Optional[float] = None,
     ) -> str:
         '''
@@ -438,7 +438,7 @@ class SequenceMultiGroupData:
     def get_html(
         self,
         vocab_dict: Dict[int, str],
-        width: Optional[int] = 425,
+        width: Optional[int] = 420,
         height: Optional[int] = None,
         hovertext: bool = True,
     ) -> str:
@@ -563,6 +563,7 @@ class MiddlePlotsData:
         vocab_dict: Dict[int, str],
         compact: bool = False,
         histogram_line_idx: Optional[int] = None,
+        left_margin: Optional[int] = None,
     ) -> str:
         '''
         Args:
@@ -570,10 +571,11 @@ class MiddlePlotsData:
                 Used for converting token indices to string tokens.
             compact: bool
                 If True, then we make it horizontally compact (by putting the table and charts side by side).
-
             histogram_line_idx: Optional[int]
                 If supplied, then we use this index to choose which line to add to the plots. If not supplied, we don't
                 add a line.
+            left_margin: Optional[int]
+                If supplied, this margin overrides the default grid-item margin.
         '''
         kwargs_for_line_annotations = {}
         if histogram_line_idx is not None:
@@ -615,11 +617,11 @@ class MiddlePlotsData:
             if compact:
                 assert len(html_str) == 2, f"Expected 2 HTML strings, got {len(html_str)}"
                 return "\n".join([
-                    grid_item(html_str[0]),
-                    grid_item(html_str[1], width=380)
+                    grid_item(html_str[0], left_margin=left_margin),
+                    grid_item(html_str[1], width=380, left_margin=left_margin)
                 ])
             else:
-                return grid_item(html_str)
+                return grid_item(html_str, left_margin=left_margin)
         else:
             return html_str
 
@@ -659,7 +661,7 @@ class PromptData:
         vocab_dict: Dict[int, str],
         hovertext: bool = True,
         bold_idx: Optional[int] = None,
-        width: Optional[int] = 425,
+        width: Optional[int] = 420,
         histogram_line_idx: Optional[int] = None,
     ) -> str:
         '''
@@ -671,7 +673,7 @@ class PromptData:
 <h3>{title}</h3>
 
 {self.prompt_data.get_html(vocab_dict, hovertext, bold_idx, overflow_x="break")}
-{self.middle_plots_data.get_html(vocab_dict, histogram_line_idx=histogram_line_idx)}
+{self.middle_plots_data.get_html(vocab_dict, histogram_line_idx=histogram_line_idx, left_margin=0)}
 {self.sequence_data.get_html(vocab_dict, group_size=10, width=seq_width, hovertext=hovertext)}
 """
         return grid_item(html_contents, width=width)
@@ -716,7 +718,7 @@ class MultiPromptData:
         seq_pos: int,
         score_name: Literal["act_size", "act_quantile", "loss_effect"],
         vocab_dict: Dict[int, str],
-        width: Optional[int] = 425,
+        width: Optional[int] = 420,
     ) -> str:
         
         # Check arguments are valid, and if they are then get the score title (i.e. the how it'll appear in HTML)

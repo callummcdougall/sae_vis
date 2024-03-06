@@ -595,7 +595,7 @@ def get_prompt_data(
     correct_token_unembeddings = model.W_U[:, tokens[0, 1:]] # [d_model seq]
     orig_logits = (resid_post / resid_post.std(dim=-1, keepdim=True)) @ model.W_U # [seq d_vocab]
 
-    print("Put rich progress bar here!")
+    # TODO - better progress bars
 
     for i, feat in enumerate(feature_idx):
 

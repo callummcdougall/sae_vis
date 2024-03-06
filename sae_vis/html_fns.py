@@ -396,16 +396,18 @@ def grid_item(
     html_contents: str,
     width: Optional[int] = None,
     height: Optional[int] = None,
+    left_margin: Optional[int] = None,
 ) -> str:
     '''
     Wraps the HTML contents in a 'grid-item' element.
 
     If width or height are given, the grid item will be rendered at a fixed size (with scrollbars).
+
+    If left_margin is given, the grid will have a left margin of that many pixels.
     '''
-    width_str: str = f"width: {width}px;" if width is not None else ""
-    height_str: str = f"height: {height}px;" if height is not None else ""
-    if height is not None:
-        print(height_str)
+    width_str = f"width: {width}px;" if width is not None else ""
+    height_str = f"height: {height}px;" if height is not None else ""
+    margin_str = f"margin-left: {left_margin}px;" if left_margin is not None else ""
     
-    return f'<div class="grid-item" style="{width_str} {height_str}">{html_contents}</div>'
+    return f'<div class="grid-item" style="{width_str} {height_str} {margin_str}">{html_contents}</div>'
 
