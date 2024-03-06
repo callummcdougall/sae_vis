@@ -8,6 +8,7 @@ from torch import Tensor
 import numpy as np
 from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from tqdm import tqdm
+from transformers import AutoTokenizer
 
 from transformer_lens import utils
 
@@ -156,10 +157,16 @@ def to_str_tokens(vocab_dict: Dict[int, str], tokens: Union[int, torch.Tensor]):
     them in the same shape as the original tensor (i.e. nested lists).
     '''
     if isinstance(tokens, int):
-        return vocab_dict[tokens]
+        if isinstance(vocab_dict, AutoTokenizer):
+            return vocab_dict.decode(tokens)
+        else:
+            return vocab_dict[tokens]
 
     # Get flattened list of tokens
-    str_tokens = [vocab_dict[t] for t in tokens.flatten().tolist()]
+    if isinstance(vocab_dict, AutoTokenizer):
+        str_tokens = [vocab_dict.decode(t) for t in tokens.flatten().tolist()]
+    else:
+        str_tokens = [vocab_dict[t] for t in tokens.flatten().tolist()]
 
     # Reshape
     return np.reshape(str_tokens, tokens.shape).tolist()
