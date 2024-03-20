@@ -126,8 +126,8 @@ class TransformerLensWrapper(nn.Module):
         self.hook_point = hook_point
 
         # Get the layer (so we can do the early stopping in our forward pass)
-        assert re.match(r'blocks\.\d\.', hook_point), "Error: expecting hook_point to be 'blocks.{layer}.{...}'"
-        self.hook_layer = int(re.search(r'blocks\.(\d)\.', hook_point).group(1))
+        assert re.match(r'blocks\.\d+\.', hook_point), "Error: expecting hook_point to be 'blocks.{layer}.{...}'"
+        self.hook_layer = int(re.search(r'blocks\.(\d+)\.', hook_point).group(1))
 
         # Get the hook names for the residual stream (final) and residual stream (immediately after hook_point)
         self.hook_point_resid = utils.get_act_name("resid_post", self.hook_layer)
