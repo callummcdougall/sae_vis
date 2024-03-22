@@ -31,6 +31,7 @@ class AutoEncoderConfig:
     enc_dtype: str = "fp32"
     remove_rare_dir: bool = False
     model_batch_size: int = 64
+    device: str = "cuda"
 
     def __post_init__(self):
         '''Using kwargs, so that we can pass in a dict of parameters which might be
@@ -56,7 +57,7 @@ class AutoEncoder(nn.Module):
         self.b_dec = nn.Parameter(torch.zeros(cfg.d_in, dtype=cfg.dtype))
         self.W_dec.data[:] = self.W_dec / self.W_dec.norm(dim=-1, keepdim=True)
 
-        self.to("cuda")
+        self.to(cfg.device)
 
     def forward(self, x: torch.Tensor):
         x_cent = x - self.b_dec
