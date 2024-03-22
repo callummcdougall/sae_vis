@@ -114,8 +114,9 @@ def parse_activation_data(
     all_resid_post: Float[Tensor, "... d_model"],
     W_U: Float[Tensor, "d_model d_vocab"],
     fvp: FeatureVisParams,
-    using_B: bool = False,
     feature_out_dir: Optional[Float[Tensor, "feats d_out"]] = None,
+    corrcoef_neurons: Optional[BatchedCorrCoef] = None,
+    corrcoef_encoder_B: Optional[BatchedCorrCoef] = None,
     progress_bars: Optional[Dict[str, tqdm]] = None,
 ) -> Tuple[MultiFeatureData, Dict[str, float]]:
     """Convert generic activation data into a MultiFeatureData object, which can be used to create
@@ -125,35 +126,26 @@ def parse_activation_data(
     Args:
         tokens: Int[Tensor, "batch seq"]
             The tokens we'll be using to get the feature activations.
-
         feature_indices: Union[int, List[int]]
             The features we're actually computing. These might just be a subset of the model's full features.
-
         all_feat_acts: Float[Tensor, "... feats"]
             The activations values of the features across the batch & sequence.
-            
         feature_resid_dir: Float[Tensor, "feats d_model"]
             The directions that each feature writes to the residual stream.
-        
         all_resid_post: Float[Tensor, "... d_model"]
             The activations of the final layer of the model before the unembed. 
-
         W_U: Float[Tensor, "d_model d_vocab"]
             The model's unembed weights for the logit lens.
-        
         fvp: FeatureVisParams
             Feature visualization parameters, containing a bunch of other stuff. See the FeatureVisParams docstring for
             more information.
-
-        using_B: bool
-            Whether to compare the features to another "B"-encoder's features. 
-            These features should already be stored in all_feat_acts, e.g. using 
-            compute_feat_acts(model_acts, feature_indices, encoder, encoder_B, corrcoef_neurons, corrcoef_encoder_B)
-
         feature_out_dir: Optional[Float[Tensor, "feats d_out"]]
             The directions that each SAE feature writes to the residual stream. This will be the same as 
-            feature_resid_dir if the SAE is in the residual stream (as we will assume if it not provided).
-            
+            feature_resid_dir if the SAE is in the residual stream (as we will assume if it not provided)
+        corrcoef_neurons: Optional[BatchedCorrCoef]
+            The object which stores the rolling correlation coefficients between feature activations & neurons.
+        corrcoef_encoder_B: Optional[BatchedCorrCoef]
+            The object which stores the rolling correlation coefficients between feature activations & encoder-B features.
         progress_bars: Dict[str, tqdm]
             A dictionary containing the progress bars for the forward passes and the sequence data. This is used to
             update the progress bars as the computation progresses.
@@ -179,11 +171,9 @@ def parse_activation_data(
 
     # ! Calculate all data for the left-hand column visualisations, i.e. the 3 tables
 
-    if fvp.include_left_tables:
+    if fvp.include_left_tables and corrcoef_neurons is not None:
         if feature_out_dir is None:
             feature_out_dir = feature_resid_dir
-        corrcoef_neurons = BatchedCorrCoef()
-        corrcoef_encoder_B = BatchedCorrCoef() if using_B is not None else None
 
         # Table 1: neuron alignment, based on decoder weights
         top3_neurons_aligned = TopK(feature_out_dir, k=fvp.rows_in_left_tables, largest=True)
@@ -194,6 +184,7 @@ def parse_activation_data(
         
         # Table 3: encoder-B features correlated with this feature, based on their activations
         # Note, we deal with this differently, because supplying this argument is optional
+        using_B = corrcoef_encoder_B is not None
         if using_B:
             pearson_topk_encoderB, cossim_values_encoderB = corrcoef_encoder_B.topk_pearson(k=fvp.rows_in_left_tables)
         
@@ -398,8 +389,9 @@ def _get_feature_data(
         all_resid_post = all_resid_post,
         W_U = model.W_U,
         fvp = fvp,
-        using_B = encoder_B is not None,
         feature_out_dir = feature_out_dir,
+        corrcoef_neurons = corrcoef_neurons,
+        corrcoef_encoder_B = corrcoef_encoder_B,
         progress_bars = progress_bars,
     )
 
