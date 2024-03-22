@@ -105,6 +105,197 @@ def compute_feat_acts(
     return feat_acts
 
 
+@torch.inference_mode()
+def parse_activation_data(
+    tokens: Int[Tensor, "batch seq"],
+    feature_indices: Union[int, List[int]],
+    all_feat_acts: Float[Tensor, "... feats"],
+    feature_resid_dir: Float[Tensor, "feats d_model"],
+    all_resid_post: Float[Tensor, "... d_model"],
+    W_U: Float[Tensor, "d_model d_vocab"],
+    fvp: FeatureVisParams,
+    using_B: bool = False,
+    feature_out_dir: Optional[Float[Tensor, "feats d_out"]] = None,
+    progress_bars: Optional[Dict[str, tqdm]] = None,
+) -> Tuple[MultiFeatureData, Dict[str, float]]:
+    """Convert generic activation data into a MultiFeatureData object, which can be used to create
+    the feature-centric visualisation.
+    final_resid_acts + W_U are used for the logit lens.
+
+    Args:
+        tokens: Int[Tensor, "batch seq"]
+            The tokens we'll be using to get the feature activations.
+
+        feature_indices: Union[int, List[int]]
+            The features we're actually computing. These might just be a subset of the model's full features.
+
+        all_feat_acts: Float[Tensor, "... feats"]
+            The activations values of the features across the batch & sequence.
+            
+        feature_resid_dir: Float[Tensor, "feats d_model"]
+            The directions that each feature writes to the residual stream.
+        
+        all_resid_post: Float[Tensor, "... d_model"]
+            The activations of the final layer of the model before the unembed. 
+
+        W_U: Float[Tensor, "d_model d_vocab"]
+            The model's unembed weights for the logit lens.
+        
+        fvp: FeatureVisParams
+            Feature visualization parameters, containing a bunch of other stuff. See the FeatureVisParams docstring for
+            more information.
+
+        using_B: bool
+            Whether to compare the features to another "B"-encoder's features. 
+            These features should already be stored in all_feat_acts, e.g. using 
+            compute_feat_acts(model_acts, feature_indices, encoder, encoder_B, corrcoef_neurons, corrcoef_encoder_B)
+
+        feature_out_dir: Optional[Float[Tensor, "feats d_out"]]
+            The directions that each SAE feature writes to the residual stream. This will be the same as 
+            feature_resid_dir if the SAE is in the residual stream (as we will assume if it not provided).
+            
+        progress_bars: Dict[str, tqdm]
+            A dictionary containing the progress bars for the forward passes and the sequence data. This is used to
+            update the progress bars as the computation progresses.
+
+    Returns:
+        A MultiFeatureData containing data for creating each feature's visualization,
+        as well as data for rank-ordering the feature visualizations when it comes time
+        to make the prompt-centric view (the `feature_act_quantiles` attribute).
+        Use MultiFeatureData[feature_idx].get_html() to generate the HTML dashboard for a
+        particular feature (returns a string of HTML).
+    """
+    
+    # ! Data setup code (defining the main objects we'll eventually return)
+    sequence_data_dict: Dict[int, SequenceMultiGroupData] = {}
+    left_tables_data_dict: Dict[int, LeftTablesData] = {}
+    middle_plots_data_dict: Dict[int, MiddlePlotsData] = {}
+    
+    # Make feature_indices a list, for convenience
+    if isinstance(feature_indices, int): feature_indices = [feature_indices]
+
+    
+    t2 = time.time()
+
+    # ! Calculate all data for the left-hand column visualisations, i.e. the 3 tables
+
+    if fvp.include_left_tables:
+        if feature_out_dir is None:
+            feature_out_dir = feature_resid_dir
+        corrcoef_neurons = BatchedCorrCoef()
+        corrcoef_encoder_B = BatchedCorrCoef() if using_B is not None else None
+
+        # Table 1: neuron alignment, based on decoder weights
+        top3_neurons_aligned = TopK(feature_out_dir, k=fvp.rows_in_left_tables, largest=True)
+        pct_of_l1: Arr = np.absolute(top3_neurons_aligned.values) / utils.to_numpy(feature_out_dir.abs().sum(dim=-1, keepdim=True))
+        
+        # Table 2: neurons correlated with this feature, based on their activations
+        pearson_topk_neurons, cossim_values_neurons = corrcoef_neurons.topk_pearson(k=fvp.rows_in_left_tables)
+        
+        # Table 3: encoder-B features correlated with this feature, based on their activations
+        # Note, we deal with this differently, because supplying this argument is optional
+        if using_B:
+            pearson_topk_encoderB, cossim_values_encoderB = corrcoef_encoder_B.topk_pearson(k=fvp.rows_in_left_tables)
+        
+        # Add all this data to the list of LeftTablesData objects
+        for i, feat in enumerate(feature_indices):
+            left_tables_data_dict[feat] = LeftTablesData(
+                neuron_alignment_indices = top3_neurons_aligned[i].indices.tolist(),
+                neuron_alignment_values = top3_neurons_aligned[i].values.tolist(),
+                neuron_alignment_l1 = pct_of_l1[i].tolist(),
+                correlated_neurons_indices = pearson_topk_neurons[i].indices.tolist(),
+                correlated_neurons_pearson = pearson_topk_neurons[i].values.tolist(),
+                correlated_neurons_l1 = cossim_values_neurons[i].tolist(),
+                correlated_features_indices = pearson_topk_encoderB[i].indices.tolist() if using_B else None,
+                correlated_features_pearson = pearson_topk_encoderB[i].values.tolist() if using_B else None,
+                correlated_features_l1 = cossim_values_encoderB[i].tolist() if using_B else None,
+            )
+    else:
+        left_tables_data_dict = {feat: None for feat in feature_indices}
+
+    t3 = time.time()
+    
+    # ! Calculate all data for the right-hand visualisations, i.e. the sequences
+
+    for i, feat in enumerate(feature_indices):
+
+        # Add this feature's sequence data to the list
+        sequence_data_dict[feat] = get_sequences_data(
+            tokens = tokens,
+            feat_acts = all_feat_acts[..., i],
+            resid_post = all_resid_post,
+            feature_resid_dir = feature_resid_dir[i],
+            W_U = W_U,
+            fvp = fvp,
+        )
+        if progress_bars is not None:
+            progress_bars["feats"].update(1)
+
+    t4 = time.time()
+    
+
+    # ! Get all data for the middle column visualisations, i.e. the two histograms & the logit table
+
+    # Get the logits of all features (i.e. the directions this feature writes to the logit output)
+    logits = einops.einsum(feature_resid_dir, W_U, "feats d_model, d_model d_vocab -> feats d_vocab")
+
+    for i, (feat, logit_vector) in enumerate(zip(feature_indices, logits)):
+
+        # Get data for logits (the histogram, and the table)
+        logits_histogram_data = HistogramData.from_data(logit_vector, n_bins=40, tickmode="5 ticks")
+        top10_logits = TopK(logit_vector, k=10, largest=True)
+        bottom10_logits = TopK(logit_vector, k=10, largest=False)
+
+        # Get data for feature activations histogram (the title, and the histogram)
+        feat_acts = all_feat_acts[..., i]
+        nonzero_feat_acts = feat_acts[feat_acts > 0]
+        frac_nonzero = nonzero_feat_acts.numel() / feat_acts.numel()
+        freq_histogram_data = HistogramData.from_data(nonzero_feat_acts, n_bins=40, tickmode="ints")
+
+        # Create a MiddlePlotsData object from this, and add it to the dict
+        middle_plots_data_dict[feat] = MiddlePlotsData(
+            bottom10_logits = bottom10_logits.values.tolist(),
+            bottom10_token_ids = bottom10_logits.indices.tolist(),
+            top10_logits = top10_logits.values.tolist(),
+            top10_token_ids = top10_logits.indices.tolist(),
+            logits_histogram_data = logits_histogram_data,
+            freq_histogram_data = freq_histogram_data,
+            frac_nonzero = frac_nonzero,
+        )
+
+    t5 = time.time()
+
+
+    # ! Return the output, as a dict of FeatureData items
+
+    feature_data = {
+        feat: FeatureData(
+            # Data-containing inputs (for the feature-centric visualisation)
+            sequence_data = sequence_data_dict[feat],
+            middle_plots_data = middle_plots_data_dict[feat],
+            left_tables_data = left_tables_data_dict[feat],
+            # Non data-containing inputs
+            feature_idx = feat,
+            fvp = fvp,
+        )
+        for feat in feature_indices
+    }
+
+    # Also get the quantiles, which will be useful for the prompt-centric visualisation
+    feature_act_quantiles = QuantileCalculator.from_data(data=einops.rearrange(all_feat_acts, "b s feats -> feats (b s)"))
+
+    t6 = time.time()
+
+    time_logs = {
+        # "Forward passes to gather data": t2 - t1,
+        "Getting data for left tables": t3 - t2,
+        "Getting data for middle histograms": t5 - t4,
+        "Getting data for right sequences": t4 - t3,
+        "Generating quantiles": (t6 - t5),
+    }
+
+    return MultiFeatureData(feature_data, feature_act_quantiles), time_logs
+
 
 
 @torch.inference_mode()
@@ -164,22 +355,10 @@ def _get_feature_data(
 
     # Make feature_indices a list, for convenience
     if isinstance(feature_indices, int): feature_indices = [feature_indices]
-    n_feats = len(feature_indices)
-
-    # Get the vocab dict, which we'll use at the end
-    vocab_dict = create_vocab_dict(model.tokenizer)
 
     # Get tokens into minibatches, for the fwd pass
     token_minibatches = (tokens,) if fvp.minibatch_size_tokens is None else tokens.split(fvp.minibatch_size_tokens)
     token_minibatches = [tok.to(device) for tok in token_minibatches]
-
-
-
-    # ! Data setup code (defining the main objects we'll eventually return)
-
-    sequence_data_dict: Dict[int, SequenceMultiGroupData] = {}
-    left_tables_data_dict: Dict[int, LeftTablesData] = {}
-    middle_plots_data_dict: Dict[int, MiddlePlotsData] = {}
 
     # Create lists to store the feature activations & final values of the residual stream
     all_resid_post = []
@@ -190,15 +369,13 @@ def _get_feature_data(
     corrcoef_encoder_B = BatchedCorrCoef() if (fvp.include_left_tables and (encoder_B is not None)) else None
 
     # Get encoder & decoder directions
-    feature_out_dir = encoder.W_dec[feature_indices] # [feats d_autoencoder]
+    feature_out_dir = encoder.W_dec[feature_indices] # [feats d_autoencoder_input]
     feature_resid_dir = to_resid_dir(feature_out_dir, model) # [feats d_model]
 
     t1 = time.time()
 
 
-
     # ! Compute & concatenate together all feature activations & post-activation function values
-
     for minibatch in token_minibatches:
         residual, model_acts = model.forward(minibatch, return_logits=False)
         feat_acts = compute_feat_acts(model_acts, feature_indices, encoder, encoder_B, corrcoef_neurons, corrcoef_encoder_B)
@@ -212,124 +389,26 @@ def _get_feature_data(
 
     t2 = time.time()
 
+    # ! Use the data we've collected to make a MultiFeatureData object
+    multi_feature_data, time_logs = parse_activation_data(
+        tokens = tokens,
+        feature_indices = feature_indices,
+        all_feat_acts = all_feat_acts,
+        feature_resid_dir = feature_resid_dir,
+        all_resid_post = all_resid_post,
+        W_U = model.W_U,
+        fvp = fvp,
+        using_B = encoder_B is not None,
+        feature_out_dir = feature_out_dir,
+        progress_bars = progress_bars,
+    )
 
 
-    # ! Calculate all data for the left-hand column visualisations, i.e. the 3 tables
+    time_logs["Forward passes to gather data"] = t2 - t1
+    time_logs["Initialization"] = t1 - t0
 
-    if fvp.include_left_tables:
+    return multi_feature_data, time_logs
 
-        # Table 1: neuron alignment, based on decoder weights
-        top3_neurons_aligned = TopK(feature_out_dir, k=fvp.rows_in_left_tables, largest=True)
-        pct_of_l1: Arr = np.absolute(top3_neurons_aligned.values) / utils.to_numpy(feature_out_dir.abs().sum(dim=-1, keepdim=True))
-        
-        # Table 2: neurons correlated with this feature, based on their activations
-        pearson_topk_neurons, cossim_values_neurons = corrcoef_neurons.topk_pearson(k=fvp.rows_in_left_tables)
-        
-        # Table 3: encoder-B features correlated with this feature, based on their activations
-        # Note, we deal with this differently, because supplying this argument is optional
-        using_B = encoder_B is not None
-        if using_B:
-            pearson_topk_encoderB, cossim_values_encoderB = corrcoef_encoder_B.topk_pearson(k=fvp.rows_in_left_tables)
-        
-        # Add all this data to the list of LeftTablesData objects
-        for i, feat in enumerate(feature_indices):
-            left_tables_data_dict[feat] = LeftTablesData(
-                neuron_alignment_indices = top3_neurons_aligned[i].indices.tolist(),
-                neuron_alignment_values = top3_neurons_aligned[i].values.tolist(),
-                neuron_alignment_l1 = pct_of_l1[i].tolist(),
-                correlated_neurons_indices = pearson_topk_neurons[i].indices.tolist(),
-                correlated_neurons_pearson = pearson_topk_neurons[i].values.tolist(),
-                correlated_neurons_l1 = cossim_values_neurons[i].tolist(),
-                correlated_features_indices = pearson_topk_encoderB[i].indices.tolist() if using_B else None,
-                correlated_features_pearson = pearson_topk_encoderB[i].values.tolist() if using_B else None,
-                correlated_features_l1 = cossim_values_encoderB[i].tolist() if using_B else None,
-            )
-    else:
-        left_tables_data_dict = {feat: None for feat in feature_indices}
-
-    t3 = time.time()
-
-
-
-    # ! Calculate all data for the right-hand visualisations, i.e. the sequences
-
-    for i, feat in enumerate(feature_indices):
-
-        # Add this feature's sequence data to the list
-        sequence_data_dict[feat] = get_sequences_data(
-            tokens = tokens,
-            feat_acts = all_feat_acts[..., i],
-            resid_post = all_resid_post,
-            feature_resid_dir = feature_resid_dir[i],
-            W_U = model.W_U,
-            fvp = fvp,
-        )
-        progress_bars["feats"].update(1)
-
-    t4 = time.time()
-    
-
-    # ! Get all data for the middle column visualisations, i.e. the two histograms & the logit table
-
-    # Get the logits of all features (i.e. the directions this feature writes to the logit output)
-    logits = einops.einsum(feature_resid_dir, model.W_U, "feats d_model, d_model d_vocab -> feats d_vocab")
-
-    for i, (feat, logit_vector) in enumerate(zip(feature_indices, logits)):
-
-        # Get data for logits (the histogram, and the table)
-        logits_histogram_data = HistogramData.from_data(logit_vector, n_bins=40, tickmode="5 ticks")
-        top10_logits = TopK(logit_vector, k=10, largest=True)
-        bottom10_logits = TopK(logit_vector, k=10, largest=False)
-
-        # Get data for feature activations histogram (the title, and the histogram)
-        feat_acts = all_feat_acts[..., i]
-        nonzero_feat_acts = feat_acts[feat_acts > 0]
-        frac_nonzero = nonzero_feat_acts.numel() / feat_acts.numel()
-        freq_histogram_data = HistogramData.from_data(nonzero_feat_acts, n_bins=40, tickmode="ints")
-
-        # Create a MiddlePlotsData object from this, and add it to the dict
-        middle_plots_data_dict[feat] = MiddlePlotsData(
-            bottom10_logits = bottom10_logits.values.tolist(),
-            bottom10_token_ids = bottom10_logits.indices.tolist(),
-            top10_logits = top10_logits.values.tolist(),
-            top10_token_ids = top10_logits.indices.tolist(),
-            logits_histogram_data = logits_histogram_data,
-            freq_histogram_data = freq_histogram_data,
-            frac_nonzero = frac_nonzero,
-        )
-
-    t5 = time.time()
-
-
-    # ! Return the output, as a dict of FeatureData items
-
-    feature_data = {
-        feat: FeatureData(
-            # Data-containing inputs (for the feature-centric visualisation)
-            sequence_data = sequence_data_dict[feat],
-            middle_plots_data = middle_plots_data_dict[feat],
-            left_tables_data = left_tables_data_dict[feat],
-            # Non data-containing inputs
-            feature_idx = feat,
-            fvp = fvp,
-        )
-        for feat in feature_indices
-    }
-
-    # Also get the quantiles, which will be useful for the prompt-centric visualisation
-    feature_act_quantiles = QuantileCalculator.from_data(data=einops.rearrange(all_feat_acts, "b s feats -> feats (b s)"))
-
-    t6 = time.time()
-
-    time_logs = {
-        "Forward passes to gather data": t2 - t1,
-        "Getting data for left tables": t3 - t2,
-        "Getting data for middle histograms": t5 - t4,
-        "Getting data for right sequences": t4 - t3,
-        "Other": (t1 - t0) + (t6 - t5),
-    }
-
-    return MultiFeatureData(feature_data, feature_act_quantiles), time_logs
 
 
 
@@ -520,80 +599,72 @@ def get_sequences_data(
 
 
 
-
 @torch.inference_mode()
-def get_prompt_data(
-    encoder: AutoEncoder,
-    model: HookedTransformer,
-    prompt: str,
+def parse_prompt_data(
+    tokens: Int[Tensor, "batch seq"],
+    str_toks: list[str],
     feature_data: MultiFeatureData,
-    fvp: FeatureVisParams,
+    feature_idx: list[int],
+    feat_acts: Float[Tensor, "seq feats"],
+    feature_resid_dir: Float[Tensor, "feats d_model"],
+    resid_post: Float[Tensor, "seq d_model"],
+    W_U: Float[Tensor, "d_model d_vocab"],
     num_top_features: int = 10,
 ) -> MultiPromptData:
-    '''
-    Gets data that will be used to create the sequences in the prompt-centric HTML visualisation.
-    
+    """Gets data needed to create the sequences in the prompt-centric HTML visualisation.
+       
+       This visualization displays dashboards for the most relevant features on a prompt.
+       
     Args:
-        encoder: AutoEncoder
-            The encoder whose features we'll be analyzing.
-        model: HookedTransformer
-            The model we'll be using to get the feature activations. It'll be wrapped in a TransformerLensWrapper.
         tokens: Int[Tensor, "batch seq"]
             The tokens we'll be using to get the feature activations. Note that we might not be using all of them; the
             number used is determined by `fvp.total_batch_size`.
-        feature_indices: Union[int, List[int]]
+
+        str_toks:  list[str]
+            The tokens as a list of strings, so that they can be visualized in HTML.
+
+        feature_data: MultiFeatureData
+             A MultiFeatureData containing data for creating each feature's visualization, 
+             and feature_act_quantiles for rank-ordering the features. 
+                
+        feature_idx: Union[int, List[int]]
             The features we're actually computing. These might just be a subset of the model's full features.
-        fvp: FeatureVisParams
-            Feature visualization parameters, containing a bunch of other stuff. See the FeatureVisParams docstring for
-            more information.
+
+        feat_acts: Float[Tensor, "seq feats"]
+            The activations values of the features across the sequence.
+
+        feature_resid_dir: Float[Tensor, "feats d_model"]
+            The directions that each feature writes to the residual stream.
+
+        resid_post: Float[Tensor, "seq d_model"]
+            The activations of the final layer of the model before the unembed. 
+        
+        W_U: Float[Tensor, "d_model d_vocab"]
+            The model's unembed weights for the logit lens.
+            
         num_top_features: int
             The number of top features to display in this view, for any given metric.
 
-    Returns object of class MultiFeatureData (i.e. containing data for creating each feature visualization, as well as
-    data for rank-ordering the feature visualizations when it comes time to make the prompt-centric view).
+    Returns:
+        A MultiPromptData object containing data for visualizing the most relevant features
+        given the prompt.
+    
+    Similar to parse_feature_data, except it just gets the data relevant for a particular
+    sequence (i.e. a custom one that the user inputs on their own).
 
+    The ordering metric for relevant features is set by the str_score parameter in the
+    MultiPromptData.get_html() method: it can be "act_size", "act_quantile", or "loss_effect"
 
-    Similar to get_feature_data, except it just gets the data relevant for a particular sequence (i.e. a custom one that
-    the user inputs on their own). This means it ditches most of the complex indexing to get sequence groups, since we're
-    only keeping a fraction of the 'full HTML'.
+    """
 
-    feature_data is useful because we want to extract the top sequences for this feature, and display them underneath the
-    column.
-    '''
-
-    # ! Boring setup code
-
-    torch.cuda.empty_cache()
-
-    feature_idx = list(feature_data.feature_data_dict.keys())
     n_feats = len(feature_idx)
-
-    str_toks: List[str] = model.tokenizer.tokenize(prompt)
-    tokens: torch.Tensor = model.tokenizer.encode(prompt, return_tensors="pt").to(device)
     batch, seq_len = tokens.shape
-
-    sequence_data_dict: Dict[int, SequenceData] = {}
-
-    # If the model is from TransformerLens, we need to apply a wrapper to it for standardization
-    assert isinstance(model, HookedTransformer), "Error: non-HookedTransformer models are not yet supported."
-    model = TransformerLensWrapper(model, fvp.hook_point)
-
-    feature_act_dir = encoder.W_enc[:, feature_idx] # [d_in feats]
-    feature_out_dir = encoder.W_dec[feature_idx] # [feats d_in]
-    feature_resid_dir = to_resid_dir(feature_out_dir, model) # [feats d_model]
-    assert feature_act_dir.T.shape == feature_out_dir.shape == (len(feature_idx), encoder.cfg.d_in)
-
-    # ! Define hook functions to cache all the info required for feature ablation, then run those hook fns
-
-    resid_post, act_post = model(tokens, return_logits=False)
-    resid_post: Tensor = resid_post.squeeze(0)
-    feat_acts = compute_feat_acts(act_post, feature_idx, encoder).squeeze(0)
-
-    feats_contribution_to_loss = torch.empty(size=(n_feats, seq_len-1), device=device)
+    feats_contribution_to_loss = torch.empty(size=(n_feats, seq_len - 1), device=device)
+    sequence_data_dict: dict[int, SequenceData] = {}
 
     # Some logit computations which we only need to do once
-    correct_token_unembeddings = model.W_U[:, tokens[0, 1:]] # [d_model seq]
-    orig_logits = (resid_post / resid_post.std(dim=-1, keepdim=True)) @ model.W_U # [seq d_vocab]
+    correct_token_unembeddings = W_U[:, tokens[0, 1:]] # [d_model seq]
+    orig_logits = (resid_post / resid_post.std(dim=-1, keepdim=True)) @ W_U # [seq d_vocab]
 
     # TODO - better progress bars
 
@@ -606,7 +677,7 @@ def get_prompt_data(
         
         # Ablate the output vector from the residual stream, and get logits post-ablation
         new_resid_post = resid_post - resid_post_feature_effect
-        new_logits = (new_resid_post / new_resid_post.std(dim=-1, keepdim=True)) @ model.W_U
+        new_logits = (new_resid_post / new_resid_post.std(dim=-1, keepdim=True)) @ W_U
 
         # Get the top5 & bottom5 changes in logits (don't bother with `efficient_topk` cause it's small)
         contribution_to_logprobs = orig_logits.log_softmax(dim=-1) - new_logits.log_softmax(dim=-1)
@@ -723,3 +794,86 @@ def get_prompt_data(
         scores_dict = scores_dict,
     )
 
+    
+
+
+
+@torch.inference_mode()
+def get_prompt_data(
+    encoder: AutoEncoder,
+    model: HookedTransformer,
+    prompt: str,
+    feature_data: MultiFeatureData,
+    fvp: FeatureVisParams,
+    num_top_features: int = 10,
+) -> MultiPromptData:
+    '''
+    Gets data that will be used to create the sequences in the prompt-centric HTML visualisation.
+    
+    Args:
+        encoder: AutoEncoder
+            The encoder whose features we'll be analyzing.
+        model: HookedTransformer
+            The model we'll be using to get the feature activations. It'll be wrapped in a TransformerLensWrapper.
+        tokens: Int[Tensor, "batch seq"]
+            The tokens we'll be using to get the feature activations. Note that we might not be using all of them; the
+            number used is determined by `fvp.total_batch_size`.
+        feature_indices: Union[int, List[int]]
+            The features we're actually computing. These might just be a subset of the model's full features.
+        fvp: FeatureVisParams
+            Feature visualization parameters, containing a bunch of other stuff. See the FeatureVisParams docstring for
+            more information.
+        num_top_features: int
+            The number of top features to display in this view, for any given metric.
+
+    Returns:
+        A MultiPromptData object containing data for visualizing the most relevant features
+        given the prompt.
+
+
+    Similar to get_feature_data, except it just gets the data relevant for a particular sequence (i.e. a custom one that
+    the user inputs on their own). This means it ditches most of the complex indexing to get sequence groups, since we're
+    only keeping a fraction of the 'full HTML'.
+
+    feature_data is useful because we want to extract the top sequences for this feature, and display them underneath the
+    column.
+    '''
+
+    # ! Boring setup code
+
+    torch.cuda.empty_cache()
+
+    feature_idx = list(feature_data.feature_data_dict.keys())
+
+    str_toks: List[str] = model.tokenizer.tokenize(prompt)
+    tokens: torch.Tensor = model.tokenizer.encode(prompt, return_tensors="pt").to(device)
+
+    # If the model is from TransformerLens, we need to apply a wrapper to it for standardization
+    assert isinstance(model, HookedTransformer), "Error: non-HookedTransformer models are not yet supported."
+    model = TransformerLensWrapper(model, fvp.hook_point)
+
+    feature_act_dir = encoder.W_enc[:, feature_idx] # [d_in feats]
+    feature_out_dir = encoder.W_dec[feature_idx] # [feats d_in]
+    feature_resid_dir = to_resid_dir(feature_out_dir, model) # [feats d_model]
+    assert feature_act_dir.T.shape == feature_out_dir.shape == (len(feature_idx), encoder.cfg.d_in)
+
+    # ! Define hook functions to cache all the info required for feature ablation, then run those hook fns
+
+    resid_post, act_post = model(tokens, return_logits=False)
+    resid_post: Tensor = resid_post.squeeze(0)
+    feat_acts = compute_feat_acts(act_post, feature_idx, encoder).squeeze(0)    
+
+    # ! Use the data we've collected to make a MultiPromptData object
+    multi_prompt_data = parse_prompt_data(
+        tokens = tokens,
+        str_toks = str_toks,
+        feature_data = feature_data,
+        feature_idx = feature_idx,
+        feat_acts = feat_acts,
+        feature_resid_dir = feature_resid_dir,
+        resid_post = resid_post,
+        W_U = model.W_U,
+        num_top_features = num_top_features,
+    )
+
+    return multi_prompt_data
