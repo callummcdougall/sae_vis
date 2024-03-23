@@ -268,22 +268,22 @@ class SaeVisLayoutConfig:
         n_columns = len(self.columns)
 
         # For each column, add a tree node
-        for i, (column, vis_components) in enumerate(self.columns.items()):
+        for col_idx, (column, vis_components) in enumerate(self.columns.items()):
             
             n_components = len(vis_components)
             tree_column = tree.add(f"Column {column}")
 
             # For each component in that column, add a tree node
-            for vis_component in vis_components:
+            for component_idx, vis_component in enumerate(vis_components):
 
                 # Add tree node for the component
                 tree_component = tree_column.add(f"{vis_component.__class__.__name__}".rstrip("Config"))
 
                 # For each config parameter of that component
-                for j, (param, value) in enumerate(asdict(vis_component).items()):
+                for (param, value) in asdict(vis_component).items():
 
-                    # Get line break at the end of the component descriptions (not of the entire table)
-                    suffix = "\n" if (j == n_components - 1) and (i < n_columns - 1) else ""
+                    # Get line break at the end of each component, except for the final column
+                    suffix = "\n" if (component_idx == n_components - 1) and (col_idx < n_columns - 1) else ""
 
                     # Get argument description, and its default value
                     desc = vis_component.help_dict.get(param, "")
