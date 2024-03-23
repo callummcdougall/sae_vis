@@ -1,485 +1,147 @@
 import numpy as np
-import json
-from typing import List
-import torch
+import itertools
+from pathlib import Path
 from torch import Tensor
-from eindex import eindex
-from typing import Optional, List, Dict, Tuple, Literal, Union
+from typing import Optional, Union, Any, Callable
 from dataclasses import dataclass, field
 from dataclasses_json import dataclass_json
-import einops
-from jaxtyping import Float
+from jaxtyping import Int
 import re
-from rich import print as rprint
-from rich.table import Table
-from transformer_lens import utils
-import time
+from copy import deepcopy
 
-Arr = np.ndarray
+from transformer_lens import HookedTransformer
+
+from sae_vis.model_fns import AutoEncoder
 
 from sae_vis.utils_fns import (
     to_str_tokens,
     QuantileCalculator,
-    TopK,
-    merge_lists,
-    extract_and_remove_scripts,
+    HistogramData,
+    SaveableDataclass,
+    get_decode_html_safe_fn,
+    unprocess_str_tok,
+    max_or_1,
 )
 from sae_vis.html_fns import (
-    generate_seq_html,
-    generate_left_tables_html,
-    generate_middle_plots_html,
-    CSS,
-    JS_HOVERTEXT_SCRIPT,
-    adjust_hovertext,
-    grid_item,
+    bgColorMap,
+    uColorMap,
+    HTML,
+)
+from sae_vis.data_config_classes import (
+    SaeVisConfig,
+    FeatureTablesConfig,
+    ActsHistogramConfig,
+    LogitsTableConfig,
+    LogitsHistogramConfig,
+    SequencesConfig,
+    PromptConfig,
+    GenericConfig,
 )
 
-
-
-
-FEATURE_VIZ_PARAMS = {
-    "hook_point": "The hook point we're using to extract the activations (if we're using a TransformerLens model). \
-This should be the full-length hook name, i.e. the thing returned by `utils.get_act_name`.",
-    "features": "The feature(s) we're analyzing. If None, we analyze all of the AutoEncoder's features.",
-    "minibatch_size_features": "Num features in each batch of calculations (i.e. we break up the features to avoid OOM \
-errors).",
-    "minibatch_size_tokens": "Number of seqs in each forward pass (i.e. we break up the tokens in our batch to avoid \
-OOM errors). Note, this is lower-level than breaking up by features (i.e. we break up the calculation by features \
-first, then within each feature group we break it up by tokens).",
-    "include_left_tables": "Whether to include the left-hand tables in the main visualization.",
-    "rows_in_left_tables": "Number of rows in the tables on the left hand side of the main visualization.",
-    "buffer": "How many tokens to add as context to each sequence. We also avoid choosing tokens from within these \
-buffer positions.",
-    "n_groups": "Number of quantile groups for the sequences on the right hand side (not including top-k).",
-    "first_group_size": "Number of sequences in the top-k group.",
-    "other_groups_size": "Number of sequences in each of the quantile groups.",
-    "border": "Whether to include the shadow border around the main visualization.",
-    "seq_width": "The max width of the sequences in the main visualization. If None, they'll be full-width (to contain \
-the longest seq).",
-    "seq_height": "The max height of the sequences in the main visualization. If None, they'll be full-height (to contain \
-all the sequences).",
-    "seed": "Seed for random number generation (used for choosing the top-k sequences).",
-    "verbose": "Whether to print out the time taken for each task, and the estimated time for all features (note, this \
-can be very noisy when the number of features is small).",
+METRIC_TITLES = {
+    "act_size": "Activation Size",
+    "act_quantile": "Activation Quantile",
+    "loss_effect": "Loss Effect",
 }
+PRECISION = 4
 
-
-def save_json(
-    obj,
-    filename: Optional[str] = None,
-    return_dict: bool = False,
-):
-    '''
-    Saves the object to a JSON file (and optionally returns dict).
-
-    Args:
-        obj: the object to be saved
-        filename: if None then we don't save, if string then we save here
-        return_dict: if True then we return the dict, if False then we return nothing
-    '''
-    t0 = time.time()
-    assert (filename is not None) or return_dict,\
-        "You're doing nothing in this function. Either specify a filename or set return_dict=True."
-
-    # Convert the object to a dictionary, and save it if necessary
-    obj_to_dict = obj.to_dict()
-    if filename is not None:
-        assert filename.endswith(".json"), "Expected filename to end with '.json'"
-        json.dump(obj_to_dict, open(filename, "w"))
-        # print(f"Saved to JSON in {time.time() - t0:.2f} seconds")
-    
-    # If we're returning the dict, then return it here
-    if return_dict:
-        # print(f"Converted to dict in {time.time() - t0:.2f} seconds total")
-        return obj_to_dict
-
-
-# Function to load a dataclass object from a dictionary
-def load_json(
-    dataclass_type,
-    data_dict: Optional[Dict] = None,
-    filename: Optional[str] = None,
-):
-    '''
-    Loads a dataclass object from a saved filename (or directly from a dict).
-
-    Args:
-        dataclass_type: the dataclass type we're loading
-        data_dict: dictionary containing the data (if not None)
-        filename: filename we're loading data from (if not None)
-    '''
-    t0 = time.time()
-    assert int(filename is None) + int(data_dict is None) == 1,\
-        "Expected exactly one of filename or data_dict should be supplied."
-    
-    # If we're using a filename, then load in the data (as a dictionary)
-    if filename is not None:
-        data_dict = json.load(open(filename, "r"))
-        # print(f"Loaded in {time.time() - t0:.2f} seconds")
-    
-    # Get dataclass object from dictionary
-    data_dict = dataclass_type.from_dict(data_dict)
-    # print(f"Converted to dataclass in {time.time() - t0:.2f} seconds total")
-    return data_dict
-
-
-@dataclass_json
-@dataclass
-class FeatureVisParams:
-
-    hook_point: Optional[str] = None
-
-    features: Optional[Union[int, List[int]]] = None
-    minibatch_size_features: int = 256
-    minibatch_size_tokens: int = 64
-
-    include_left_tables: bool = True
-    rows_in_left_tables: int = 3
-    buffer: tuple = (5, 5)
-    n_groups: int = 10
-    first_group_size: int = 20
-    other_groups_size: int = 5
-
-    border: bool = True
-    seq_width: Optional[int] = 420
-    seq_height: Optional[int] = None
-
-    seed: Optional[int] = 0
-    verbose: bool = True
-
-    def help(self) -> None:
-        '''
-        Prints out the values & meanings of all the parameters. Also highlights when they're different to default.
-        '''
-        default_fvp = FeatureVisParams()
-        table = Table("Parameter", "Value", "Meaning", title="FeatureVisParams (orange = changed from default)", show_lines=True)
-        for param, meaning in FEATURE_VIZ_PARAMS.items():
-            value = str(getattr(self, param))
-            default_value = str(getattr(default_fvp, param))
-            value_formatted = value if value == default_value else f"[b dark_orange]{value}[/]"
-            table.add_row(param, value_formatted, meaning)
-        rprint(table)
-
-
-@dataclass_json
-@dataclass
-class HistogramData:
-    '''
-    Class for storing all the data necessary to construct a histogram, like we see in the middle plots.
-
-    Args:
-        data: Tensor
-            The data we're going to be plotting in the histogram.
-        n_bins: int
-            The number of bins we want to use in the histogram.
-        tickmode: str
-            How we want to choose the tick values for the histogram. This is pretty hacky atm.
-        
-        line_posn: List[float]
-            The possible positions of vertical lines we want to put on the histogram. This is a list because in the
-            prompt-centric visualisation there will be a different line for each token.
-        line_text: List[str]
-            The text we want to display on the line. Again this is a list, corresponding to the line_posn list.
-
-    Unlike many other classes here, this class actually does computation on its inputs. This is because
-    we don't need to store the entire `data` tensor, only the height of each bar. This is why we eventually
-    get the following 3 attributes, in place of the `data` tensor:
-
-        bar_heights (List[float]): The height of each bar in the histogram.
-        bar_values (List[float]): The value of each bar in the histogram.
-        tick_vals (List[float]): The tick values we want to use for the histogram.
-    '''
-    bar_heights: List[float] = field(default_factory=list)
-    bar_values: List[float] = field(default_factory=list)
-    tick_vals: List[float] = field(default_factory=list)
-    line_posn: List[float] = field(default_factory=list)
-    line_text: List[str] = field(default_factory=list)
-
-    @classmethod
-    def from_data(
-        cls,
-        data: Tensor,
-        n_bins: int,
-        tickmode: str,
-        line_posn: List[float] = [],
-        line_text: List[str] = [],
-    ) -> "HistogramData":
-        '''
-        Returns a HistogramData object, with data computed from the inputs. This is to support the goal of only storing
-        the minimum necessary data (and making it serializable, for JSON saving).
-        '''
-        # There might be no data, if the feature never activates
-        if data.numel() == 0:
-            return HistogramData()
-
-        # Get min and max of data
-        max_value = data.max().item()
-        min_value = data.min().item()
-
-        # Divide range up into 40 bins
-        bin_size = (max_value - min_value) / n_bins
-        bin_edges = torch.linspace(min_value, max_value, n_bins + 1)
-        # Calculate the heights of each bin
-        bar_heights = torch.histc(data, bins=n_bins).int().tolist()
-        bar_values = [round(x, 5) for x in (bin_edges[:-1] + bin_size / 2).tolist()]
-        
-        # Choose tickvalues (super hacky and terrible, should improve this!)
-        assert tickmode in ["ints", "5 ticks"]
-
-        if tickmode == "ints":
-            top_tickval = int(max_value)
-            tick_vals = torch.arange(0, top_tickval + 1, 1).tolist()
-        elif tickmode == "5 ticks":
-            # Ticks chosen in multiples of 0.1, so we have 3 on the longer side
-            if max_value > -min_value:
-                tickrange = 0.1 * int(1e-4 + max_value / (3 * 0.1)) + 1e-6
-                num_positive_ticks = 3
-                num_negative_ticks = int(-min_value / tickrange)
-            else:
-                tickrange = 0.1 * int(1e-4 + -min_value / (3 * 0.1)) + 1e-6
-                num_negative_ticks = 3
-                num_positive_ticks = int(max_value / tickrange)
-            tick_vals = merge_lists(
-                reversed([-tickrange * i for i in range(1, 1+num_negative_ticks)]), # negative values (if exist)
-                [0], # zero (always is a tick)
-                [tickrange * i for i in range(1, 1+num_positive_ticks)] # positive values
-            )
-            tick_vals = [round(t, 1) for t in tick_vals]
-
-        return HistogramData(
-            bar_heights = bar_heights,
-            bar_values = bar_values,
-            tick_vals = tick_vals,
-            line_posn = line_posn,
-            line_text = line_text,
-        )
-
-
-
-@dataclass_json
-@dataclass
-class SequenceData:
-    '''
-    Class to store data for a given sequence, which will be turned into an HTML visulisation. See the README for a
-    diagram of how this class fits into the overall visualization.
-
-    Always-visible data:
-        token_ids: list of token IDs in the sequence
-        feat_acts: sizes of activations on this sequence
-        contribution_to_loss: effect on loss of this feature, for this particular token (neg = helpful)
-
-    Data which is visible on hover:
-        top5_token_ids: list of the top 5 logit-boosted tokens by this feature
-        top5_logits: list of the corresponding 5 changes in logits for those tokens
-        bottom5_token_ids: list of the bottom 5 logit-boosted tokens by this feature
-        bottom5_logits: list of the corresponding 5 changes in logits for those tokens
-
-    Metadata:
-        filter: if this is true, we filter out the data which is zero (this saves space when we save the data).
-    '''
-    token_ids: List[int] = field(default_factory=list)
-    feat_acts: List[float] = field(default_factory=list)
-    contribution_to_loss: List[float] = field(default_factory=list)
-    top5_token_ids: Optional[List[List[int]]] = None
-    top5_logits: Optional[List[List[float]]] = None
-    bottom5_token_ids: Optional[List[List[str]]] = None
-    bottom5_logits: Optional[List[List[float]]] = None
-    filter: bool = False
-
-    def __post_init__(self) -> None:
-        '''
-        Filters the list of floats and ints, by removing any elements which are zero. Note - the absolute values of the
-        floats are monotonic non-increasing, so we can assume that all the elements we keep will be the first elements
-        of their respective lists.
-
-        Also reduces precisions of feature activations & logits to 4dp.
-        '''
-        if self.filter:
-            self.feat_acts = [round(f, 4) for f in self.feat_acts]
-            self.top5_logits, self.top5_token_ids = self._filter(self.top5_logits, self.top5_token_ids)
-            self.bottom5_logits, self.bottom5_token_ids = self._filter(self.bottom5_logits, self.bottom5_token_ids)
-
-    def _filter(self, float_list: Optional[List[List[float]]], int_list: Optional[List[List[int]]]):
-        if float_list is None:
-            return None, None
-        
-        float_list = [[round(f, 4) for f in floats if abs(f) > 1e-6] for floats in float_list]
-        int_list = [ints[:len(floats)] for ints, floats in zip(int_list, float_list)]
-
-        for floats, ints in zip(float_list, int_list):
-            assert len(floats) == len(ints), "Expected the same number of floats and ints"
-
-        return float_list, int_list
-
-    def __len__(self) -> int:
-        return len(self.token_ids)
-    
-    def get_html(
-        self,
-        vocab_dict: Dict[int, str],
-        hovertext: bool = True,
-        bold_idx: Optional[int] = None,
-        overflow_x: Literal["break", None] = None,
-        max_act_color: Optional[float] = None,
-    ) -> str:
-        '''
-        Args:
-            vocab_dict: Dict[int, str]
-                Used for mapping token IDs to string tokens
-            hovertext: bool
-                Determines if we add hovertext to this HTML (yes if the sequence is on its own, no otherwise)
-            bold_idx: Optional[int]
-                If supplied, then we bold the token at this index. Default is the middle token
-            overflow_x: Literal["break", None]
-                If supplied, then we use this as the value for the overflow-x CSS property (useful for prompt-centric
-                view, where we wrap user-input prompt)
-            max_act_color: Optional[float]:
-                We use this as the most extreme value, for coloring tokens by activation
-        '''
-        html_str = generate_seq_html(
-            vocab_dict,
-            token_ids = self.token_ids,
-            feat_acts = self.feat_acts,
-            contribution_to_loss = self.contribution_to_loss,
-            bold_idx = bold_idx if bold_idx is not None else len(self.token_ids) // 2, # bold the middle token by default
-            pos_ids = self.top5_token_ids,
-            neg_ids = self.bottom5_token_ids,
-            pos_val = self.top5_logits,
-            neg_val = self.bottom5_logits,
-            overflow_x = overflow_x,
-            max_act_color = max_act_color,
-        )
-        if hovertext: html_str += f"<script>{JS_HOVERTEXT_SCRIPT}</script>"
-        return html_str
-
-
-@dataclass_json
-@dataclass
-class SequenceGroupData:
-    '''
-    Class to store data for a given sequence group, which will be turned into an HTML visulisation. See the README for a
-    diagram of how this class fits into the overall visualization.
-
-    All the arguments are equivalent to those for SequenceData (except for `title` which is the header of the group),
-    so see the SequenceData class for more information.
-    '''
-    title: str = ""
-    seq_data: List[SequenceData] = field(default_factory=list)
-    
-    def __len__(self) -> int:
-        return len(self.seq_data)
-    
-    def get_html(
-        self,
-        vocab_dict: Dict[int, str],
-        group_size: Optional[int] = None,
-        hovertext: bool = True,
-        width: Optional[int] = 420,
-        max_act_color: Optional[float] = None,
-    ) -> str:
-        '''
-        This creates a single group of sequences, i.e. title plus some number of vertically stacked sequences.
-
-        Args:
-            vocab_dict: Dict[int, str]
-                Used for converting token indices to string tokens.
-            group_size: Optional[int]
-                If supplied, we only use this many sequences from the group. If not supplied, we use all of them.
-            hovertext: bool
-                This adds the JavaScript hovertext. If this is the only sequence group in our visualization then we need
-                to add the hovertext, but if we're generating multiple sequence groups then we add the hovertext at a
-                higher level.
-            width: Optional[int]
-                If not None, then the sequence data will be wrapped in a div with this width. If None, then the
-                sequences will be full-length (i.e. each column containing sequences will have variable width, to match
-                the sequences).
-            max_act_color: Optional[float]
-                If supplied, then we use this as the most extreme value, for coloring the tokens by activation value.
-        '''
-        # Get the styles for the div
-        width_style: str = "" if width is None else f"width:{width}px;"
-
-        # Get the data that will go into the div
-        html_contents = "".join([
-            seq.get_html(vocab_dict, hovertext=False, max_act_color=max_act_color)
-            for seq in self.seq_data[:group_size]
-        ])
-
-        # Assemble the full div
-        html_str: str = f'''
-<h4>{self.title}</h4>
-
-<div class="seq-scroll" style="{width_style}">
-    {html_contents}
-</div>
 '''
-        # If necessary, add hovertext
-        if hovertext:
-            html_str += f"<script>{JS_HOVERTEXT_SCRIPT}</script>"
+This file contains all the dataclasses which store data used to create the visualizations. 
 
-        return html_str
+There are 2 special classes (SaeVisData, FeatureData), and 8 other component dataclasses.
+
+TLDR:
+
+    - SaeVisData is the class that users interact with
+        - It contains a bunch of FeatureData objects (one for each feature) which it uses when creating both the
+            feature-centric and prompt-centric visualizations.
+    - The other 8 component dataclasses store data for a given component, e.g. logits table / hist or sequence group.
+    - FeatureData is the middleman:
+        - It stores a bunch of components, enough to make the feature-centric vis for a single feature, or a single
+            column of the prompt-centric vis for a particular feature
+        - The SaeVisData object has methods to create the feature-centric and prompt-centric vis, and these will call
+            methods of all its FeatureData objects & merge the results
+
+WAY MORE DETAIL THAN YOU EVER THOUGHT YOU NEEDED:
+
+SaeVisData
+
+    This is the most important class (it's the one that users interact with). The 3 user-exposed methods are:
+    - `create` (classmethod) which is how we gather the data in the first place
+    - `save_html_feature_centric` which is how we get the HTML for the feature-centric view
+    - `save_html_prompt_centric` which is how we get the HTML for the prompt-centric view
+
+FeatureData
+
+    This is maybe the most complicated class to understand, since it's basically a middle-ground between SaeVisData and
+    the 8 component dataclasses. To explain this middle-ground role:
+
+        - It contains a bunch of component dataclasses (e.g. FeatureTablesData, ActsHistogramData, etc). This is all the
+          data necessary to make the feature-centric vis, for a single feature (or to make a single column of the
+          prompt-centric vis, for a particular feature).
+        - SaeVisData contains a bunch of FeatureData objects (one for each feature)
+
+    In feature-centric vis:
+        `SaeVisData.save_html_feature_centric` will call `FeatureData._get_html_data_feature_centric` for each of its
+        features (i.e. returning a bunch of full-page objects), then merge the results into a single HTML object which
+        becomes the feature-centric vis.
+
+    In prompt-centric vis:
+        Calling `SaeVisData.save_html_prompt_centric` will call `FeatureData._get_html_data_prompt_centric` for every
+        choice of tuple (metric function, token in user's prompt) and every one of the top-scoring features for that
+        tuple (i.e. returning a bunch of column objects), then merge across features into a full-page object, then merge
+        these full-page objects into a single HTML object which becomes the prompt-centric vis.
+
+8 component dataclasses
+
+The 8 component dataclasses correspond to particular components in the vis (e.g. logits table, feature activations
+histogram, or sequence groups), which might appear more than once in any given vis. Each of these classes has a method
+called `_get_html_data`, which returns an HTML object (we'll union over all these HTML objects for any given vis). The
+5 arguments for each `_get_html_data` method are always the same:
+    
+    - `cfg`, which is the config object for the visualization. Every different type of component has its own config, see
+        `data_config_classes.py` for more. Example: the `FeatureTablesConfig` object determines how many rows to include
+        in the tables.
+    
+    - `decode_fn`, which is a function that takes a token ID and returns a string token. This is created from the model
+        vocabulary, but we use this as an argument so we don't have to create it more than once.
+    
+    - `id_suffix`, which is a string that is appended to the end of the ID of the HTML object. This is used to make sure
+        that components have a unique ID, and it also helps us match up token hoverlines with the right histogram.
+    
+    - `column`, which is the index of the column in the visualization. This is also used to give components a unique ID.
+
+    - `component_specific_kwargs`, which is a dictionary of any other arguments that are specific to the component. This
+        is currently only used for the prompt data in the prompt-centric view, because we need to specify which token is
+        bolded (and that it has a permanent line). It's good to be able to pass all these arguments into a single dict,
+        since this way I can still keep the same type signature (these 5 inputs) for all components. Also, I can do
+        things like pass `bold_idx` into this dictionary without checking which components it's for, since it'll just
+        be ignored if it's not needed for the component in question.
+
+A full list of these 8 classes (and what data they contain):
+
+    FeatureTablesData:      Basic data about features, e.g. correlated neurons (left-hand tables in default view)
+    ActsHistogramData:      Data for the feature activations histogram (middle top histogram in default view)
+    LogitsTableData:        Data for the logits table (middle table in default view)
+    LogitsHistogramData:    Data for the logits histogram (middle bottom histogram in default view)
+    SequenceData:           Data for a single sequence of tokens (right-hand side of default view)
+    SequenceGroupData:      Data for a group of sequences (e.g. a quantile in prompt-centric view)
+    SequenceMultiGroupData: Data for multiple groups of sequences (e.g. all quantiles in prompt-centric view)
+'''
+
 
 
 
 @dataclass_json
 @dataclass
-class SequenceMultiGroupData:
+class FeatureTablesData:
     '''
-    Class to store data for multiple sequence groups, which will be turned into an HTML visulisation. See the README for
-    a diagram of how this class fits into the overall visualization.
+    This contains all the data necessary to make the left-hand tables in prompt-centric visualization. See diagram
+    in readme: 
 
-    See the SequenceGroupData and SequenceData classes for more information on the arguments.
-    '''
-    seq_group_data: List[SequenceGroupData] = field(default_factory=list)
+        https://github.com/callummcdougall/sae_vis#data_storing_fnspy
 
-    def __getitem__(self, idx: int) -> SequenceGroupData:
-        return self.seq_group_data[idx]
-
-    def get_html(
-        self,
-        vocab_dict: Dict[int, str],
-        width: Optional[int] = 420,
-        height: Optional[int] = None,
-        hovertext: bool = True,
-    ) -> str:
-        '''
-        Returns all the sequence groups' HTML, wrapped in grid-items (plus the JavaScript code at the end).
-        '''
-        # Get max activation value, over all sequences
-        max_act_color: float = max([
-            max(seq.feat_acts) for seq_group in self.seq_group_data for seq in seq_group.seq_data
-        ])
-
-        # Get the HTML for all the sequence groups (the first one is the top activations, the rest are quantiles)
-        html_top, *html_quantiles = [
-            sequences_group.get_html(
-                vocab_dict = vocab_dict,
-                max_act_color = max_act_color,
-                width = width,
-                hovertext = False,
-            )
-            for sequences_group in self.seq_group_data
-        ]
-
-        # Create a grid item for the first group, plus a grid item for every 3 quantiles, until we've used them all
-        sequences_html = grid_item(html_top, height=height)
-        while len(html_quantiles) > 0:
-            L = min(3, len(html_quantiles))
-            html_next, html_quantiles = html_quantiles[:L], html_quantiles[L:]
-            sequences_html += grid_item(''.join(html_next), height=height)
-
-        # If necessary, add the javascript
-        return sequences_html + (f"<script>{JS_HOVERTEXT_SCRIPT}</script>" if hovertext else "")
-
-
-
-@dataclass_json
-@dataclass
-class LeftTablesData:
-    '''
-    Class to store all the data used in the left-hand tables (i.e. neuron alignment, correlated neurons & features).
-
-    Args:
+    Inputs:
         neuron_alignment...
             The data for the neuron alignment table (each of its 3 columns). In other words, the data containing which
             neurons in the transformer the encoder feature is most aligned with.
@@ -490,507 +152,935 @@ class LeftTablesData:
 
         correlated_features...
             The data for the correlated features table (each of its 3 columns). In other words, the data containing
-            which features in encoder-B are most correlated with those in the original encoder.
+            which features in encoder-B are most correlated with those in the original encoder. Note, this one might be
+            absent if we're not using a B-encoder.
     '''
-    neuron_alignment_indices: List[int] = field(default_factory=list)
-    neuron_alignment_values: List[float] = field(default_factory=list)
-    neuron_alignment_l1: List[float] = field(default_factory=list)
-    correlated_neurons_indices: List[int] = field(default_factory=list)
-    correlated_neurons_pearson: List[float] = field(default_factory=list)
-    correlated_neurons_l1: List[float] = field(default_factory=list)
-    correlated_features_indices: List[int] = field(default_factory=list)
-    correlated_features_pearson: List[float] = field(default_factory=list)
-    correlated_features_l1: List[float] = field(default_factory=list)
+    neuron_alignment_indices: list[int] = field(default_factory=list)
+    neuron_alignment_values: list[float] = field(default_factory=list)
+    neuron_alignment_l1: list[float] = field(default_factory=list)
+    correlated_neurons_indices: list[int] = field(default_factory=list)
+    correlated_neurons_pearson: list[float] = field(default_factory=list)
+    correlated_neurons_cossim: list[float] = field(default_factory=list)
+    correlated_features_indices: list[int] = field(default_factory=list)
+    correlated_features_pearson: list[float] = field(default_factory=list)
+    correlated_features_cossim: list[float] = field(default_factory=list)
 
-    def get_html(self) -> str:
+    def _get_html_data(
+        self,
+        cfg: FeatureTablesConfig,
+        decode_fn: Callable[[int | list[int]], str | list[str]],
+        id_suffix: str,
+        column: int | tuple[int, int],
+        component_specific_kwargs: dict[str, Any] = {},
+    ) -> HTML:
         '''
-        The `get_html` function returns the HTML for the left-hand tables, wrapped in a 'grid-item' div.
+        Returns the HTML for the left-hand tables, wrapped in a 'grid-column' div.
+
+        Note, we only ever use this obj in the context of the left-hand column of the feature-centric vis, and it's
+        always the same width & height, which is why there's no customization available for this function.
         '''
-        # Generate & return the left-hand HTML tables
-        html_str: str = generate_left_tables_html(
-            self.neuron_alignment_indices,
-            self.neuron_alignment_values,
-            self.neuron_alignment_l1,
-            self.correlated_neurons_indices,
-            self.correlated_neurons_pearson,
-            self.correlated_neurons_l1,
-            self.correlated_features_indices,
-            self.correlated_features_pearson,
-            self.correlated_features_l1,
+        # Crop the lists to `cfg.n_rows` (first checking the config doesn't ask for more rows than we have)
+        assert cfg.n_rows <= len(self.neuron_alignment_indices)
+        neuron_alignment_indices = self.neuron_alignment_indices[:cfg.n_rows]
+        neuron_alignment_values = self.neuron_alignment_values[:cfg.n_rows]
+        neuron_alignment_l1 = self.neuron_alignment_l1[:cfg.n_rows]
+        correlated_neurons_indices = self.correlated_neurons_indices[:cfg.n_rows]
+        correlated_neurons_pearson = self.correlated_neurons_pearson[:cfg.n_rows]
+        correlated_neurons_cossim = self.correlated_neurons_cossim[:cfg.n_rows]
+
+        # Read HTML from file, and replace placeholders with real ID values
+        html_str = (Path(__file__).parent / "html" / "feature_tables_template.html").read_text()
+        html_str = html_str.replace("FEATURE_TABLES_ID", f"feature-tables-{id_suffix}")
+
+        # Add the neuron alignment and neuron correlation data to the object which will be turned into JavaScript
+        data: dict[str, Any] = {
+            "neuronAlignment": [
+                {"index": I, "value": f"{V:+.3f}", "percentageL1": f"{L:.1%}"}
+                for I, V, L in zip(neuron_alignment_indices, neuron_alignment_values, neuron_alignment_l1)
+            ],
+            "correlatedNeurons": [
+                {"index": I, "value": f"{P:+.3f}", "percentageL1": f"{C:+.3f}"}
+                for I, P, C in zip(correlated_neurons_indices, correlated_neurons_pearson, correlated_neurons_cossim)
+            ],
+        }
+
+        # If we have correlated features from encoder_B, add that to the JavaScript data
+        if len(self.correlated_features_indices) > 0:
+            correlated_features_indices = self.correlated_features_indices[:cfg.n_rows]
+            correlated_features_pearson = self.correlated_features_pearson[:cfg.n_rows]
+            correlated_features_cossim = self.correlated_features_cossim[:cfg.n_rows]
+
+            assert (correlated_features_pearson is not None) and (correlated_features_cossim is not None), "All or none"
+            data["correlatedFeaturesBEncoder"] = [
+                {"index": I, "value": f"{P:+.3f}", "percentageL1": f"{C:+.3f}"}
+                for I, P, C in zip(correlated_features_indices, correlated_features_pearson, correlated_features_cossim)
+            ]
+        # If not, remove that table from the HTML string
+        else:
+            html_str = re.sub(r'<h4>CORRELATED FEATURES \(B-ENCODER\)</h4>.*?</table>', "", html_str, flags=re.DOTALL)
+
+        return HTML(
+            html_data = {column: html_str},
+            js_data = {"featureTablesData": {id_suffix: data}}
         )
-        return grid_item(html_str)
+
+
+@dataclass_json
+@dataclass
+class ActsHistogramData(HistogramData):
+    def _get_html_data(
+        self,
+        cfg: ActsHistogramConfig,
+        decode_fn: Callable[[int | list[int]], str | list[str]],
+        id_suffix: str,
+        column: int | tuple[int, int],
+        component_specific_kwargs: dict[str, Any] = {},
+    ) -> HTML:
+        '''
+        Converts data -> HTML object, for the feature activations histogram (i.e. the histogram over all sampled tokens,
+        showing the distribution of activations for this feature).
+        '''
+        # We can't post-hoc change the number of bins, so check this wasn't changed in the config
+        # assert cfg.n_bins == len(self.bar_heights),\
+        #     "Can't post-hoc change `n_bins` in histogram config - you need to regenerate data."
+        
+        # Read HTML from file, and replace placeholders with real ID values
+        html_str = (Path(__file__).parent / "html" / "acts_histogram_template.html").read_text()
+        html_str = html_str.replace("HISTOGRAM_ACTS_ID", f"histogram-acts-{id_suffix}")
+
+        # Process colors for frequency histogram; it's darker at higher values
+        bar_values_normed = [(0.4 * max(self.bar_values) + 0.6 * v) / max(self.bar_values) for v in self.bar_values]
+        bar_colors = [bgColorMap(v) for v in bar_values_normed]
+        
+        # Next we create the data dict
+        data: dict[str, Any] = {
+            "y": self.bar_heights,
+            "x": self.bar_values,
+            "ticks": self.tick_vals,
+            "colors": bar_colors,
+        }
+        if self.title is not None:
+            data["title"] = self.title
+
+        return HTML(
+            html_data = {column: html_str},
+            js_data = {"actsHistogramData": {id_suffix: data}},
+        )
+
+
+@dataclass_json
+@dataclass
+class LogitsHistogramData(HistogramData):
+    def _get_html_data(
+        self,
+        cfg: LogitsHistogramConfig,
+        decode_fn: Callable[[int | list[int]], str | list[str]],
+        id_suffix: str,
+        column: int | tuple[int, int],
+        component_specific_kwargs: dict[str, Any] = {},
+    ) -> HTML:
+        '''
+        Converts data -> HTML object, for the logits histogram (i.e. the histogram over all tokens in the vocab, showing
+        the distribution of direct logit effect on that token).
+        '''
+        # We can't post-hoc change the number of bins, so check this wasn't changed in the config
+        # assert cfg.n_bins == len(self.bar_heights),\
+        #     "Can't post-hoc change `n_bins` in histogram config - you need to regenerate data."
+
+        # Read HTML from file, and replace placeholders with real ID values
+        html_str = (Path(__file__).parent / "html" / "logits_histogram_template.html").read_text()
+        html_str = html_str.replace("HISTOGRAM_LOGITS_ID", f"histogram-logits-{id_suffix}")
+
+        data: dict[str, Any] = {
+            "y": self.bar_heights,
+            "x": self.bar_values,
+            "ticks": self.tick_vals,
+        }
+        if self.title is not None:
+            data["title"] = self.title
+
+        return HTML(
+            html_data = {column: html_str},
+            js_data = {"logitsHistogramData": {id_suffix: data}},
+        )
+
+
+@dataclass_json
+@dataclass
+class LogitsTableData:
+
+    bottom_token_ids: list[int] = field(default_factory=list)
+    bottom_logits: list[float] = field(default_factory=list)
+    top_token_ids: list[int] = field(default_factory=list)
+    top_logits: list[float] = field(default_factory=list)
+
+    def _get_html_data(
+        self,
+        cfg: LogitsTableConfig,
+        decode_fn: Callable[[int | list[int]], str | list[str]],
+        id_suffix: str,
+        column: int | tuple[int, int],
+        component_specific_kwargs: dict[str, Any] = {},
+    ) -> HTML:
+        '''
+        Converts data -> HTML object, for the logits table (i.e. the top and bottom affected tokens by this feature).
+        '''
+        # Crop the lists to `cfg.n_rows` (first checking the config doesn't ask for more rows than we have)
+        assert cfg.n_rows <= len(self.bottom_logits)
+        bottom_token_ids = self.bottom_token_ids[:cfg.n_rows]
+        bottom_logits = self.bottom_logits[:cfg.n_rows]
+        top_token_ids = self.top_token_ids[:cfg.n_rows]
+        top_logits = self.top_logits[:cfg.n_rows]
+        
+        # Get the negative and positive background values (darkest when equals max abs)
+        max_value = max(max(top_logits[:cfg.n_rows]), -min(bottom_logits[:cfg.n_rows]))
+        neg_bg_values = np.absolute(bottom_logits[:cfg.n_rows]) / max_value
+        pos_bg_values = np.absolute(top_logits[:cfg.n_rows]) / max_value
+
+        # Get the string tokens, using the decode function
+        neg_str = to_str_tokens(decode_fn, bottom_token_ids[:cfg.n_rows])
+        pos_str = to_str_tokens(decode_fn, top_token_ids[:cfg.n_rows])
+
+        # Read HTML from file, and replace placeholders with real ID values
+        html_str = (Path(__file__).parent / "html" / "logits_table_template.html").read_text()
+        html_str = html_str.replace("LOGITS_TABLE_ID", f"logits-table-{id_suffix}")
+
+        # Create object for storing JS data
+        data: dict[str, list] = {"negLogits": [], "posLogits": []}
+
+        # Get data for the tables of pos/neg logits
+        for i in range(len(neg_str)):
+            data["negLogits"].append({
+                "symbol": unprocess_str_tok(neg_str[i]),
+                "value": round(top_logits[i], 2),
+                "color": f"rgba(255,{int(255*(1-neg_bg_values[i]))},{int(255*(1-neg_bg_values[i]))},0.5)"
+            })
+            data["posLogits"].append({
+                "symbol": unprocess_str_tok(pos_str[i]),
+                "value": round(top_logits[i], 2),
+                "color": f"rgba({int(255*(1-pos_bg_values[i]))},{int(255*(1-pos_bg_values[i]))},255,0.5)"})
+            
+        return HTML(
+            html_data = {column: html_str},
+            js_data = {"logitsTableData": {id_suffix: data}},
+        )
+
+
 
 
 
 @dataclass_json
 @dataclass
-class MiddlePlotsData:
+class SequenceData:
     '''
-    Class to store all the data used in the middle plots (i.e. activation density, logits table & histogram).
+    This contains all the data necessary to make a sequence of tokens in the vis. See diagram in readme: 
 
-    Inputs:
-        bottom10_token_ids: List[int]
-            The token IDs corresponding to the 10 most negative logits.
-        
-        bottom10_logits: List[float]
-            The 10 most negative logits (corresponding to the token IDs above).
+        https://github.com/callummcdougall/sae_vis#data_storing_fnspy
 
-        top10_token_ids: List[int]
-            The token IDs corresponding to the 10 most positive logits.
+    Always-visible data:
+        token_ids:              List of token IDs in the sequence
+        feat_acts:              Sizes of activations on this sequence
+        loss_contribution:   Effect on loss of this feature, for this particular token (neg = helpful)
 
-        top10_logits: List[float]
-            The 10 most positive logits (corresponding to the token IDs above).
-
-        logits_histogram_data: HistogramData
-            Used to generate the logits histogram.
-
-        freq_histogram_data: HistogramData
-            Used to generate the activation density histogram.
-
-        frac_nonzero: float
-            Used to generate the title of the activation density histogram.
+    Data which is visible on hover:
+        token_logits:       The logits of the particular token in that sequence (used for line on logits histogram)
+        top_token_ids:     List of the top 5 logit-boosted tokens by this feature
+        top_logits:        List of the corresponding 5 changes in logits for those tokens
+        bottom_token_ids:  List of the bottom 5 logit-boosted tokens by this feature
+        bottom_logits:     List of the corresponding 5 changes in logits for those tokens
     '''
-    bottom10_token_ids: List[int]
-    bottom10_logits: List[float]
-    top10_token_ids: List[int]
-    top10_logits: List[float]
-    logits_histogram_data: HistogramData
-    freq_histogram_data: HistogramData
-    frac_nonzero: float
+    token_ids: list[int] = field(default_factory=list)
+    feat_acts: list[float] = field(default_factory=list)
+    loss_contribution: list[float] = field(default_factory=list)
 
-    def get_html(
+    token_logits: list[float] = field(default_factory=list)
+    top_token_ids: list[list[int]] = field(default_factory=list)
+    top_logits: list[list[float]] = field(default_factory=list)
+    bottom_token_ids: list[list[int]] = field(default_factory=list)
+    bottom_logits: list[list[float]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        '''
+        Filters the logits & token IDs by removing any elements which are zero (this saves space in the eventual
+        JavaScript).
+        '''
+        self.seq_len = len(self.token_ids)
+        self.top_logits, self.top_token_ids = self._filter(self.top_logits, self.top_token_ids)
+        self.bottom_logits, self.bottom_token_ids = self._filter(self.bottom_logits, self.bottom_token_ids)
+
+    def _filter(
         self,
-        vocab_dict: Dict[int, str],
-        compact: bool = False,
-        histogram_line_idx: Optional[int] = None,
-        left_margin: Optional[int] = None,
-    ) -> str:
+        float_list: list[list[float]],
+        int_list: list[list[int]]
+    ) -> tuple[list[list[float]], list[list[int]]]:
+        '''
+        Filters the list of floats and ints, by removing any elements which are zero. Note - the absolute values of the
+        floats are monotonic non-increasing, so we can assume that all the elements we keep will be the first elements
+        of their respective lists. Also reduces precisions of feature activations & logits.
+        '''
+        # Next, filter out zero-elements and reduce precision
+        float_list = [[round(f, PRECISION) for f in floats if abs(f) > 1e-6] for floats in float_list]
+        int_list = [ints[:len(floats)] for ints, floats in zip(int_list, float_list)]
+        return float_list, int_list
+    
+
+    def _get_html_data(
+        self,
+        cfg: PromptConfig | SequencesConfig,
+        decode_fn: Callable[[int | list[int]], str | list[str]],
+        id_suffix: str,
+        column: int | tuple[int, int],
+        component_specific_kwargs: dict[str, Any] = {},
+    ) -> HTML:
         '''
         Args:
-            vocab_dict: Dict[int, str]
-                Used for converting token indices to string tokens.
-            compact: bool
-                If True, then we make it horizontally compact (by putting the table and charts side by side).
-            histogram_line_idx: Optional[int]
-                If supplied, then we use this index to choose which line to add to the plots. If not supplied, we don't
-                add a line.
-            left_margin: Optional[int]
-                If supplied, this margin overrides the default grid-item margin.
+
+        Returns:
+            js_data: list[dict[str, Any]]
+                The data for this sequence, in the form of a list of dicts for each token (where the dict stores things
+                like token, feature activations, etc).
         '''
-        kwargs_for_line_annotations = {}
-        if histogram_line_idx is not None:
-            assert isinstance(self.logits_histogram_data.line_posn, list), "Expected list of line positions"
-            assert isinstance(self.freq_histogram_data.line_posn, list), "Expected list of line positions"
-            kwargs_for_line_annotations.update(dict(
-                logits_line_posn = self.logits_histogram_data.line_posn[histogram_line_idx],
-                logits_line_text = self.logits_histogram_data.line_text[histogram_line_idx],
-                freq_line_posn = self.freq_histogram_data.line_posn[histogram_line_idx],
-                freq_line_text = self.freq_histogram_data.line_text[histogram_line_idx],
+        assert isinstance(cfg, (PromptConfig, SequencesConfig)), f"Invalid config type: {type(cfg)}"
+        seq_group_id = component_specific_kwargs.get("seq_group_id", None)
+        max_act_color = component_specific_kwargs.get("max_act_color", None)
+        max_loss_color = component_specific_kwargs.get("max_loss_color", None)
+        bold_idx = component_specific_kwargs.get("bold_idx", None)
+        permanent_line = component_specific_kwargs.get("permanent_line", False)
+        first_in_group = component_specific_kwargs.get("first_in_group", True)
+        title = component_specific_kwargs.get("title", None)
+        hover_above = component_specific_kwargs.get("hover_above", False)
+
+        # If we didn't supply a sequence group ID, then we assume this sequence is on its own, and give it a unique ID
+        if seq_group_id is None: seq_group_id = f"prompt-{column:03d}"
+        
+        # If we didn't specify bold_idx, then set it to be the midpoint
+        if bold_idx is None: bold_idx = self.seq_len // 2
+
+        # If we only have data for the bold token, we pad out everything with zeros or empty lists
+        only_bold = isinstance(cfg, SequencesConfig) and not(cfg.compute_buffer)
+        if only_bold:
+            feat_acts = [self.feat_acts[0] if i == bold_idx else 0.0 for i in range(self.seq_len)]
+            loss_contribution = [self.loss_contribution[0] if i == bold_idx + 1 else 0.0 for i in range(self.seq_len)]
+            pos_ids = [self.top_token_ids[0] if i == bold_idx + 1 else [] for i in range(self.seq_len)]
+            neg_ids = [self.bottom_token_ids[0] if i == bold_idx + 1 else [] for i in range(self.seq_len)]
+            pos_val = [self.top_logits[0] if i == bold_idx + 1 else [] for i in range(self.seq_len)]
+            neg_val = [self.bottom_logits[0] if i == bold_idx + 1 else [] for i in range(self.seq_len)]
+        else:
+            feat_acts = deepcopy(self.feat_acts)
+            loss_contribution = deepcopy(self.loss_contribution)
+            pos_ids = deepcopy(self.top_token_ids)
+            neg_ids = deepcopy(self.bottom_token_ids)
+            pos_val = deepcopy(self.top_logits)
+            neg_val = deepcopy(self.bottom_logits)
+
+        # Get values for converting into colors later
+        bg_denom = max_or_1(self.feat_acts) if (max_act_color is None) else max_act_color
+        u_denom = max_or_1(self.loss_contribution, abs=True) if (max_loss_color is None) else max_loss_color
+        bg_values = (np.maximum(feat_acts, 0.0) / max(1e-4, bg_denom)).tolist()
+        u_values = (np.array(loss_contribution) / max(1e-4, u_denom)).tolist()
+
+        # If we sent in a prompt rather than this being sliced from a longer sequence, then the pos_ids etc will be shorter
+        # than the token list by 1, so we need to pad it at the first token
+        if isinstance(cfg, PromptConfig):
+            assert len(pos_ids) == len(neg_ids) == len(pos_val) == len(neg_val) == len(self.token_ids) - 1,\
+                "If this is a single prompt, these lists must be the same length as token_ids or 1 less"
+            pos_ids = [[]] + pos_ids
+            neg_ids = [[]] + neg_ids
+            pos_val = [[]] + pos_val
+            neg_val = [[]] + neg_val
+        assert len(pos_ids) == len(neg_ids) == len(pos_val) == len(neg_val) == len(self.token_ids),\
+            "If this is part of a sequence group etc are given, they must be the same length as token_ids"
+
+        # Process the tokens to get str toks
+        toks = to_str_tokens(decode_fn, self.token_ids)
+        pos_toks = [to_str_tokens(decode_fn, pos) for pos in pos_ids]
+        neg_toks = [to_str_tokens(decode_fn, neg) for neg in neg_ids]
+
+        # Define the JavaScript object which will be used to populate the HTML string
+        js_data_list = []
+
+        for i in range(len(self.token_ids)):
+
+            # We might store a bunch of different case-specific data in the JavaScript object for each token. This is
+            # done in the form of a disjoint union over different dictionaries (which can each be empty or not), this
+            # minimizes the size of the overall JavaScript object. See function in `tokens_script.js` for more.
+            kwargs_bold: dict[str, bool] = {}
+            kwargs_hide: dict[str, bool] = {}
+            kwargs_this_token_active: dict[str, Any] = {}
+            kwargs_prev_token_active: dict[str, Any] = {}
+            kwargs_hover_above: dict[str, bool] = {}
+
+
+            # Get args if this is the bolded token (we make it bold, and maybe add permanent line to histograms)
+            if bold_idx is not None and bold_idx == i:
+                kwargs_bold["isBold"] = True
+                if permanent_line: kwargs_bold["permanentLine"] = True
+
+            # If we only have data for the bold token, we hide all other tokens' hoverdata (and skip other kwargs)
+            if only_bold and isinstance(bold_idx, int) and (i not in {bold_idx, bold_idx + 1}):
+                kwargs_hide["hide"] = True
+
+            else:
+                # Get args if we're making the tooltip hover above token (default is below)
+                if hover_above:
+                    kwargs_hover_above["hoverAbove"] = True
+
+                # If feature active on this token, get background color and feature act (for hist line)
+                if abs(feat_acts[i]) > 1e-8:
+                    kwargs_this_token_active = dict(
+                        featAct = round(feat_acts[i], PRECISION),
+                        bgColor = bgColorMap(bg_values[i]),
+                    )
+
+                # If prev token active, get the top/bottom logits table, underline color, and loss effect (for hist line)
+                pos_toks_i, neg_toks_i, pos_val_i, neg_val_i = pos_toks[i], neg_toks[i], pos_val[i], neg_val[i]
+                if len(pos_toks_i) + len(neg_toks_i) > 0:
+                    # Create dictionary
+                    kwargs_prev_token_active = dict(
+                        posToks = pos_toks_i,
+                        negToks = neg_toks_i,
+                        posVal = pos_val_i,
+                        negVal = neg_val_i,
+                        lossEffect = round(loss_contribution[i], PRECISION),
+                        uColor = uColorMap(u_values[i]),
+                    )
+
+            js_data_list.append(dict(
+                tok = unprocess_str_tok(toks[i]),
+                tokID = self.token_ids[i],
+                tokenLogit = round(self.token_logits[i], PRECISION),
+                **kwargs_bold,
+                **kwargs_this_token_active,
+                **kwargs_prev_token_active,
+                **kwargs_hover_above,
             ))
 
-        # Get the negative and positive background values (darkest when equals max abs). Easier when in tensor form
-        max_value = max(np.absolute(self.bottom10_logits).max(), np.absolute(self.top10_logits).max())
-        neg_bg_values = np.absolute(self.bottom10_logits) / max_value
-        pos_bg_values = np.absolute(self.top10_logits) / max_value
+        # Create HTML string (empty by default since sequences are added by JavaScript) and JS data    
+        html_str = ""
+        js_seq_group_data: dict[str, Any] = {"data": [js_data_list]}
 
-        html_str = generate_middle_plots_html(
-            neg_str = to_str_tokens(vocab_dict, self.bottom10_token_ids),
-            neg_values = self.bottom10_logits,
-            neg_bg_values = neg_bg_values,
-            pos_str = to_str_tokens(vocab_dict, self.top10_token_ids),
-            pos_values = self.top10_logits,
-            pos_bg_values = pos_bg_values,
+        # Add group-specific stuff if this is the first sequence in the group
+        if first_in_group:
 
-            freq_hist_data_bar_heights = self.freq_histogram_data.bar_heights,
-            freq_hist_data_bar_values = self.freq_histogram_data.bar_values,
-            freq_hist_data_tick_vals = self.freq_histogram_data.tick_vals,
-            logits_hist_data_bar_heights = self.logits_histogram_data.bar_heights,
-            logits_hist_data_bar_values = self.logits_histogram_data.bar_values,
-            logits_hist_data_tick_vals = self.logits_histogram_data.tick_vals,
+            # Read HTML from file, replace placeholders with real ID values
+            html_str = (Path(__file__).parent / "html" / "sequences_group_template.html").read_text()
+            html_str = html_str.replace("SEQUENCE_GROUP_ID", seq_group_id)
 
-            frac_nonzero = self.frac_nonzero,
-            compact = compact,
-            **kwargs_for_line_annotations,
+            # Get title of sequence group, and the idSuffix to match up with a histogram
+            js_seq_group_data["idSuffix"] = id_suffix
+            if title is not None: js_seq_group_data["title"] = title
+
+        return HTML(
+            html_data = {column: html_str},
+            js_data = {"tokenData": {seq_group_id: js_seq_group_data}}
         )
 
-        if grid_item:
-            if compact:
-                assert len(html_str) == 2, f"Expected 2 HTML strings, got {len(html_str)}"
-                return "\n".join([
-                    grid_item(html_str[0], left_margin=left_margin),
-                    grid_item(html_str[1], width=380, left_margin=left_margin)
-                ])
-            else:
-                return grid_item(html_str, left_margin=left_margin)
-        else:
-            return html_str
-
-
-
-
-
-
-
 
 @dataclass_json
 @dataclass
-class PromptData:
+class SequenceGroupData:
     '''
-    This class contains all the data necessary to make a single prompt-centric visualization, i.e. each column here:
+    This contains all the data necessary to make a single group of sequences (e.g. a quantile in prompt-centric
+    visualization). See diagram in readme: 
 
-        https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-demo-1.png
+        https://github.com/callummcdougall/sae_vis#data_storing_fnspy
 
-    Args:
-        prompt_data: Dict[str, SequenceGroupData]
-            This contains all the data which will be used to construct the sequences (at the bottom of the column).
-
-        middle_plots_data: MiddlePlotsData
-            This contains all the data which will be used to construct the middle plots (act density histogram, logits
-            tables, and logits histogram).
-
-        sequence_data: Dict[str, SequenceGroupData]
-            This contains all the data which will be used to construct the sequences (at the bottom of the column).
+    Inputs:
+        title:      The title that this sequence group will have, if any. This is used in `_get_html_data`. The titles
+                    will actually be in the HTML strings, not in the JavaScript data.
+        seq_data:   The data for the sequences in this group.
     '''
-    prompt_data: SequenceData
-    middle_plots_data: MiddlePlotsData
-    sequence_data: SequenceGroupData
-
-    def get_html(
-        self,
-        title: str,
-        vocab_dict: Dict[int, str],
-        hovertext: bool = True,
-        bold_idx: Optional[int] = None,
-        width: Optional[int] = 420,
-        histogram_line_idx: Optional[int] = None,
-    ) -> str:
-        '''
-        Gets all the HTML for multiple sequences.
-        '''
-        seq_width: int | None = width - 20 if width is not None else None
-
-        html_contents = f"""
-<h3>{title}</h3>
-
-{self.prompt_data.get_html(vocab_dict, hovertext, bold_idx, overflow_x="break")}
-{self.middle_plots_data.get_html(vocab_dict, histogram_line_idx=histogram_line_idx, left_margin=0)}
-{self.sequence_data.get_html(vocab_dict, group_size=10, width=seq_width, hovertext=hovertext)}
-"""
-        return grid_item(html_contents, width=width)
-        
-
-@dataclass_json
-@dataclass
-class MultiPromptData:
-    '''
-    This class contains all the data necessary to make a full prompt-centric visualization, i.e. this thing:
-
-        https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-demo-1.png
-
-    Args:
-        prompt_str_toks: List[str]
-            List of string-tokens of the prompt.
-
-        prompt_data_dict: Dict[int, PromptData]
-            Contains all the different possible PromptData objects we might be using in this visualisation,
-            indexed by feature index.
-
-        scores_dict:
-            Maps every combination of (scoring metric, sequence posn) to a list of highest-scoring features.
-
-            keys: str
-                Concatenated (score_name, seq_pos), separated by a dash.
-                E.g. "act_size-0", "act_quantile-1". "loss_effect-2".
-
-            values: Tuple[List[int], List[str]]
-                The 2 elements are the feature indices, and scores (as strings).
-
-    '''
-    prompt_str_toks: List[str] = field(default_factory=list)
-    prompt_data_dict: Dict[int, PromptData] = field(default_factory=dict)
-    scores_dict: Dict[str, Tuple[List[int], List[str]]] = field(default_factory=dict)
-
-    def __getitem__(self, idx: int) -> PromptData:
-        return self.prompt_data_dict[idx]
-
-    def get_html(
-        self,
-        seq_pos: int,
-        score_name: Literal["act_size", "act_quantile", "loss_effect"],
-        vocab_dict: Dict[int, str],
-        width: Optional[int] = 420,
-    ) -> str:
-        
-        # Check arguments are valid, and if they are then get the score title (i.e. the how it'll appear in HTML)
-        assert score_name in ["act_size", "act_quantile", "loss_effect"], f"Invalid score_name: {score_name!r}"
-        assert 0 <= seq_pos < len(self.prompt_str_toks)
-        if score_name == "loss_effect":
-            assert seq_pos > 0, "Can't look at the loss effect on the first token in the prompt."
-        score_title = {
-            "act_size": "Activation Size",
-            "act_quantile": "Activation Quantile",
-            "loss_effect": "Loss Effect",
-        }[score_name]
-
-        key = f"{score_name}-{seq_pos}"
-        feature_indices, scores_str = self.scores_dict[key]
-        k = len(feature_indices)
-
-        grid_items = ""
-
-        # Iterate through each of the features we're creating a box for
-        for (feature_idx, score_str) in zip(feature_indices, scores_str):
-
-            # Add the HTML box for this feature
-            grid_items += self[feature_idx].get_html(
-                title = f"Feature #<a href='demo'>{feature_idx}</a><br>{score_title} = {score_str}<br>",
-                vocab_dict = vocab_dict,
-                hovertext = False,
-                bold_idx = seq_pos,
-                width = width,
-                histogram_line_idx = seq_pos - 1 if (score_name == "loss_effect") else seq_pos,
-            )
-
-        # Change the ids from e.g. `histogram-logits` to `histogram-logits-1`, `histogram-logits-2`, ... so that the JavaScript works
-        # TODO - change this to be something less hacky?
-        for histogram_id in ["histogram-logits", "histogram-acts"]:
-            k_list = [i for i in range(1, k+1) for _ in range(2)]
-            grid_items = re.sub(histogram_id, lambda m: f"{histogram_id}-{k_list.pop(0)}", grid_items)
-
-        html_str = f"""
-<style>
-    {CSS}
-</style>
-
-<div class='grid-container'>
-    {grid_items}
-</div>
-
-<script>
-    {JS_HOVERTEXT_SCRIPT}
-</script>
-"""
-        # This saves a lot of space, by removing the hidden items from display
-        # TODO - this is also kinda hacky and should be improved
-        pattern = r'<div class="half-width-container" style="display: none;">(.*?)</div>'
-        html_str = re.sub(pattern, "", html_str, flags=re.DOTALL)
-
-        # TODO - debug why I need to do these things
-        html_str = html_str.replace("Ċ", "&bsol;n")
-        html_str = adjust_hovertext(html_str)
-        return html_str
-
-
-
-
-
-@dataclass_json
-@dataclass
-class FeatureData:
-    '''
-    This class contains all the data necessary to make a single prompt-centric visualization, like this one:
-
-        https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-demo-1.png
-
-    Args (data-containing):
-        sequence_data: Dict[str, SequenceGroupData]
-            This contains all the data which will be used to construct the right-hand sequences.
-
-        left_tables_data: LeftTablesData
-            This contains all the data which will be used to construct the left-hand tables (neuron alignment, correlated
-            neurons, and correlated features).
-
-        middle_plots_data: MiddlePlotsData
-            This contains all the data which will be used to construct the middle plots (act density histogram, logits
-            tables, and logits histogram).
-
-    Args (non-data-containing):
-        feature_idx: int
-            Index of the feature in question.
-
-        vocab_dict: Dict[int, str]
-            Used for the string tokens in the sequence visualisations.
-
-        fvp: FeatureVisParams
-            Contains several other parameters which are important in the visualisation.
-    '''
-    sequence_data: SequenceMultiGroupData
-    left_tables_data: Optional[LeftTablesData]
-    middle_plots_data: MiddlePlotsData
-
-    feature_idx: int
-    fvp: FeatureVisParams
-
-    def get_html(
-        self,
-        vocab_dict: Dict[int, str],
-        split_scripts: bool = False,
-    ) -> str:
-        '''
-        Args:
-            width: Optional[int]
-                If not None, then the sequence data will be wrapped in a div with this width. If sequences overflow past
-                this width, then there is a horizontal scrollbar. If it is None, then the sequences will be full-length
-                (i.e. each column containing sequences will be a variable width, to match the sequences).
-            split_scripts: bool
-                If True, then we return a tuple of (javascript, html without javascript). This was useful when creating
-                the visualization for my blog (perfectlynormal.co.uk/blog-sae) because the javascript has to be inserted
-                in in a specific way to make it run).
-        '''
-        # Get sequence data HTML
-        sequence_html: str = self.sequence_data.get_html(
-            vocab_dict,
-            width = self.fvp.seq_width,
-            height = self.fvp.seq_height,
-            hovertext = True,
-        )
-
-        # Get other HTML (split depending on whether we include the left tables or not)
-        if self.fvp.include_left_tables:
-            left_tables_html: str = self.left_tables_data.get_html()
-            middle_plots_data: str = self.middle_plots_data.get_html(vocab_dict)
-        else:
-            left_tables_html = ""
-            middle_plots_data: str = self.middle_plots_data.get_html(vocab_dict, compact=True)
-
-        # Get the CSS, and make appropriate edits to it
-        css = CSS
-        # If no border, then delete it from the CSS
-        if not(self.fvp.border):
-            css = css.replace("border: 1px solid #e6e6e6;", "").replace("box-shadow: 0 5px 5px rgba(0, 0, 0, 0.25);", "")
-
-        html_str = f"""
-<style>
-    {css}
-</style>
-
-<div class='grid-container'>
-    {left_tables_html}
-    {middle_plots_data}
-    {sequence_html}
-</div>
-
-<script>
-    {JS_HOVERTEXT_SCRIPT}
-</script>
-"""
-        # This saves a lot of space, by removing the hidden items from display
-        pattern = r'<div class="half-width-container" style="display: none;">(.*?)</div>'
-        html_str = re.sub(pattern, "", html_str, flags=re.DOTALL)
-        
-        # idk why this bug is here, for representing newlines the wrong way
-        html_str = html_str.replace("Ċ", "&bsol;n")
-        html_str = adjust_hovertext(html_str)
-        
-        if split_scripts:
-            return extract_and_remove_scripts(html_str) # (scripts, html_str)
-        else:
-            return html_str
-    
-@dataclass_json
-@dataclass
-class MultiFeatureData:
-    '''
-    Class for storing data for multiple different features, as well as data which is used to sort the features (for now
-    this just means quantile data on the feature activations and loss effects).
-    '''
-    feature_data_dict: Dict[int, FeatureData] = field(default_factory=dict)
-    feature_act_quantiles: QuantileCalculator = field(default_factory=QuantileCalculator)
-
-    # TODO - think about adding loss_quantiles: QuantileCalculator
-    # They're potentially slower because we need to compute logits-after-ablation for all tokens rather than just the
-    # tokens in our sequence groups (by default we don't compute logits for all tokens)
-
-    def __getitem__(self, idx: int) -> FeatureData:
-        return self.feature_data_dict[idx]
-    
-    def keys(self) -> List[int]:
-        return list(self.feature_data_dict.keys())
-
-    def values(self) -> List[FeatureData]:
-        return list(self.feature_data_dict.values())
-
-    def items(self) -> List[Tuple[int, FeatureData]]:
-        return list(self.feature_data_dict.items())
+    title: str = ""
+    seq_data: list[SequenceData] = field(default_factory=list)
     
     def __len__(self) -> int:
-        return len(self.feature_data_dict)
+        return len(self.seq_data)
+    
+    def _get_html_data(
+        self,
+        cfg: SequencesConfig,
+        decode_fn: Callable[[int | list[int]], str | list[str]],
+        id_suffix: str,
+        column: int | tuple[int, int],
+        component_specific_kwargs: dict[str, Any] = {}
 
-    def update(self, other: "MultiFeatureData") -> None:
+        # These default values should be correct when we only have one sequence group, because when we call this from
+        # a SequenceMultiGroupData we'll override them)
+    ) -> HTML:
         '''
-        Updates a MultiFeatureData object with the data from another MultiFeatureData object.
+        This creates a single group of sequences, i.e. title plus some number of vertically stacked sequences.
+
+        Note, `column` is treated specially here, because it might overflow (could be a tuple).
+
+        Args:
+            decode_fn:      Mapping from token IDs to string tokens.
+            bold_idx:       If supplied, then we bold the token at this index. Default is the middle token. Note, this
+                            argument is only allowed if the sequence group contains just one sequence.
+            group_size:     Max size of sequences in the group (i.e. we truncate after this many, if argument supplied).
+            max_act_color:  If supplied, then we use this as the most extreme value (for coloring by feature act).
+            permanent_line: If True, the bolded token for first seq in group will have a permanent line on histograms.
+            seq_group_id:   The id of the sequence group div. This will usually be passed as e.g. "seq-group-001".
+            column:         The index of this column. Note that it can be a tuple, if our SequenceMultiGroupData object
+                            has overflowed into a new column.
+        
+        Returns:
+            html_obj:       Object containing the HTML and JavaScript data for this seq group.
+        '''
+        seq_group_id = component_specific_kwargs.get("seq_group_id", None)
+        group_size = component_specific_kwargs.get("group_size", None)
+        max_act_color = component_specific_kwargs.get("max_act_color", None)
+        max_loss_color = component_specific_kwargs.get("max_loss_color", None)
+
+        # Get the data that will go into the div (list of list of dicts, i.e. containing all data for seqs in group). We
+        # start with the title.
+        html_obj = HTML()
+
+        # If seq_group_id is not supplied, then we assume this is the only sequence in the column, and we name the group
+        # after the column
+        if seq_group_id is None: seq_group_id = f"seq-group-{column:03d}"
+
+        # If max_act_color not supplied, use the max over all sequences in this group. Same for loss color
+        if max_act_color is None: max_act_color = max_or_1([act for seq in self.seq_data for act in seq.feat_acts])
+        if max_loss_color is None: max_loss_color = max_or_1([loss for seq in self.seq_data for loss in seq.loss_contribution], abs=True)
+        
+        # Accumulate the HTML data for each sequence in this group
+        for i, seq in enumerate(self.seq_data[:group_size]):
+            html_obj += seq._get_html_data(
+                cfg = cfg,
+                # pass in a PromptConfig object
+                decode_fn = decode_fn,
+                id_suffix = id_suffix,
+                column = column,
+                component_specific_kwargs = dict(
+                    bold_idx = cfg.buffer[0],
+                    permanent_line = False, # in a group, we're never showing a permanent line (only for single seqs)
+                    max_act_color = max_act_color,
+                    max_loss_color = max_loss_color,
+                    seq_group_id = seq_group_id,
+                    first_in_group = (i == 0),
+                    title = self.title,
+                )
+            )
+        
+        return html_obj
+
+
+
+@dataclass_json
+@dataclass
+class SequenceMultiGroupData:
+    '''
+    This contains all the data necessary to make multiple groups of sequences (e.g. the different quantiles in the
+    prompt-centric visualization). See diagram in readme: 
+
+        https://github.com/callummcdougall/sae_vis#data_storing_fnspy
+    '''
+    seq_group_data: list[SequenceGroupData] = field(default_factory=list)
+
+    def __getitem__(self, idx: int) -> SequenceGroupData:
+        return self.seq_group_data[idx]
+
+    def _get_html_data(
+        self,
+        cfg: SequencesConfig,
+        decode_fn: Callable[[int | list[int]], str | list[str]],
+        id_suffix: str,
+        column: int | tuple[int, int],
+        component_specific_kwargs: dict[str, Any] = {},
+    ) -> HTML:
+        '''
+        Args:
+
+        Returns:
+            html_obj:  Object containing the HTML and JavaScript data for these multiple seq groups.
+        '''
+        assert isinstance(column, int)
+
+        # Get max activation value & max loss contributions, over all sequences in all groups
+        max_act_color = max_or_1([
+            act for group in self.seq_group_data for seq in group.seq_data for act in seq.feat_acts
+        ])
+        max_loss_color = max_or_1([
+            loss for group in self.seq_group_data for seq in group.seq_data for loss in seq.loss_contribution
+        ], abs=True)
+
+        # Get the correct column indices for the sequence groups, depending on how group_wrap is configured. Note, we 
+        # deal with overflowing columns by extending the dictionary, i.e. our column argument isn't just `column`, but
+        # is a tuple of `(column, x)` where `x` is the number of times we've overflowed. For instance, if we have mode
+        # 'stack-none' then our columns are `(column, 0), (column, 1), (column, 1), (column, 1), (column, 2), ...`
+        n_groups = len(self.seq_group_data)
+        n_quantile_groups = n_groups - 1
+        match cfg.stack_mode:
+            case "stack-all":
+                # Here, we stack all groups into 1st column
+                cols = [column for i in range(n_groups)]
+            case "stack-quantiles":
+                # Here, we give 1st group its own column, and stack all groups into second column
+                cols = [(column, 0)] + [(column, 1) for _ in range(n_quantile_groups)]
+            case "stack-none":
+                # Here, we stack groups into columns as [1, 3, 3, ...]
+                cols = [(column, 0), *[(column, 1 + int(i/3)) for i in range(n_quantile_groups)]]
+            case _:
+                raise ValueError(f"Invalid stack_mode: {cfg.stack_mode}. Expected in 'stack-x' for x='all', 'quantiles', 'none'")
+
+        # Create the HTML object, and add all the sequence groups to it, possibly across different columns
+        html_obj = HTML()
+        for i, (col, group_size, sequences_group) in enumerate(zip(cols, cfg.group_sizes, self.seq_group_data)):
+            html_obj += sequences_group._get_html_data(
+                cfg = cfg,
+                decode_fn = decode_fn,
+                id_suffix = id_suffix,
+                column = col,
+                component_specific_kwargs = dict(
+                    group_size = group_size,
+                    max_act_color = max_act_color,
+                    max_loss_color = max_loss_color,
+                    seq_group_id = f"seq-group-{column}-{i}", # we label our sequence groups with (index, column)
+                )
+            )
+
+        return html_obj
+
+
+
+GenericData = Union[
+    FeatureTablesData,
+    ActsHistogramData,
+    LogitsTableData,
+    LogitsHistogramData,
+    SequenceMultiGroupData,
+    SequenceData,
+]
+
+
+@dataclass_json
+@dataclass
+class FeatureData(SaveableDataclass):
+    '''
+    This contains all the data necessary to make the feature-centric visualization, for a single feature. See
+    diagram in readme: 
+
+        https://github.com/callummcdougall/sae_vis#data_storing_fnspy
+
+    Args:
+        feature_idx:    Index of the feature in question (not used within this class's methods, but used elsewhere).
+        cfg:            Contains layout parameters which are important in the `get_html` function.
+        
+        The other args are the 6 possible components we might have in the feature-centric vis, i.e. this is where we
+        store the actual data. Note that one of these arguments is `prompt_data` which is only applicable in the prompt-
+        centric view.
+
+    This is used in both the feature-centric and prompt-centric views. In the feature-centric view, a single one
+    of these objects creates the HTML for a single feature (i.e. a full screen). In the prompt-centric view, a single
+    one of these objects will create one column of the full screen vis.
+    '''
+    feature_idx: int
+    cfg: SaeVisConfig
+
+    feature_tables_data: FeatureTablesData = field(default_factory = lambda: FeatureTablesData())
+    acts_histogram_data: ActsHistogramData = field(default_factory = lambda: ActsHistogramData())
+    logits_table_data: LogitsTableData = field(default_factory = lambda: LogitsTableData())
+    logits_histogram_data: LogitsHistogramData = field(default_factory = lambda: LogitsHistogramData())
+    sequence_data: SequenceMultiGroupData = field(default_factory = lambda: SequenceMultiGroupData())
+    prompt_data: SequenceData = field(default_factory = lambda: SequenceData())
+
+    def get_component_from_config(self, config: GenericConfig) -> GenericData:
+        '''
+        Given a config object, returns the corresponding data object stored by this instance. For instance, if the input
+        is an `FeatureTablesConfig` instance, then this function returns `self.feature_tables_data`.
+        '''
+        CONFIG_CLASS_MAP = {
+            FeatureTablesConfig.__name__: self.feature_tables_data,
+            ActsHistogramConfig.__name__: self.acts_histogram_data,
+            LogitsTableConfig.__name__: self.logits_table_data,
+            LogitsHistogramConfig.__name__: self.logits_histogram_data,
+            SequencesConfig.__name__: self.sequence_data,
+            PromptConfig.__name__: self.prompt_data,
+        }
+        config_class_name = config.__class__.__name__
+        assert config_class_name in CONFIG_CLASS_MAP, f"Invalid component config: {config_class_name}"
+        return CONFIG_CLASS_MAP[config_class_name]
+    
+    def _get_html_data_feature_centric(
+        self,
+        decode_fn: Callable,
+    ) -> HTML:
+        '''
+        Returns the HTML object for a single feature-centric view. These are assembled together into the full feature-
+        centric view.
+
+        Args:
+            decode_fn:  We use this function to decode the token IDs into string tokens. 
+
+        Returns:
+            html_obj.html_data:
+                Contains a dictionary with keys equal to columns, and values equal to the HTML strings. These will be
+                turned into grid-column elements, and concatenated.
+            html_obj.js_data:
+                Contains a dictionary with keys = component names, and values = JavaScript data that will be used by the
+                scripts we'll eventually dump in.
+        '''
+        # Create object to store all HTML
+        html_obj = HTML()
+
+        # For every column in this feature-centric layout, we add all the components in that column
+        for column_idx, column_components in self.cfg.feature_centric_layout.columns.items():
+            for component_config in column_components:
+                component = self.get_component_from_config(component_config)
+                html_obj += component._get_html_data(
+                    cfg = component_config,
+                    decode_fn = decode_fn,
+                    column = column_idx,
+                    id_suffix = "0", # we only use this if we have >1 set of histograms, i.e. prompt-centric vis
+                )
+
+        return html_obj
+
+    def _get_html_data_prompt_centric(
+        self,
+        decode_fn: Callable,
+        column_idx: int,
+        bold_idx: int,
+        title: str,
+    ) -> HTML:
+        '''
+        Returns the HTML object for a single column of the prompt-centric view. These are assembled together into a full
+        screen of a prompt-centric view, and then they're further assembled together into the full prompt-centric view.
+
+        Args:
+            decode_fn:  We use this function to decode the token IDs into string tokens. 
+            column_idx: This method only gives us a single column (of the prompt-centric vis), so we need to know which
+                        column this is (for the JavaScript data).
+            title:      The title for this column, which will be used in the JavaScript data.
+
+        Returns:
+            html_obj.html_data:
+                Contains a dictionary with the single key `str(column_idx)`, representing the single column. This will
+                become a single grid-column element, and will get concatenated with others of these.
+            html_obj.js_data:
+                Contains a dictionary with keys = component names, and values = JavaScript data that will be used by the
+                scripts we'll eventually dump in.
+        '''
+        # Create object to store all HTML
+        html_obj = HTML()
+
+        # Verify that we only have a single column
+        layout = self.cfg.prompt_centric_layout
+        assert layout.columns.keys() == {0},\
+            f"cfg.prompt_centric_layout should only have 1 column, instead found cols {layout.columns.keys()}"
+        assert layout.prompt_cfg is not None,\
+            "cfg.prompt_centric_layout should include a PromptConfig, but found None"
+        if layout.seq_cfg is not None:
+            assert (layout.seq_cfg.n_quantiles == 0) or (layout.seq_cfg.stack_mode == "stack-all"),\
+            "cfg.prompt_centric_layout should have stack_mode='stack-all' if n_quantiles > 0, so that it fits in 1 col"
+
+        # Iterate over all the components in this single column, and add them all to the HTML object
+        for component_config in layout.columns[0]:
+            component = self.get_component_from_config(component_config)
+            html_obj += component._get_html_data(
+                cfg = component_config,
+                decode_fn = decode_fn,
+                column = column_idx,
+                id_suffix = str(column_idx),
+                component_specific_kwargs = dict(  # only used for the SequenceData (the prompt)
+                    bold_idx = bold_idx,
+                    permanent_line = True,
+                    hover_above = True,
+                ),
+            )
+        
+        # Add the title in JavaScript, and the empty title element in HTML
+        html_obj.html_data[column_idx] = f"<div id='column-{column_idx}-title'></div>\n{html_obj.html_data[column_idx]}"
+        html_obj.js_data["gridColumnTitlesData"] = {str(column_idx): title}
+
+        return html_obj
+
+
+
+
+@dataclass_json
+@dataclass
+class SaeVisData(SaveableDataclass):
+    '''
+    This contains all the data necessary for constructing the feature-centric visualization, over multiple 
+    features (i.e. being able to navigate through them). See diagram in readme:
+
+        https://github.com/callummcdougall/sae_vis#data_storing_fnspy
+     
+    feature_data_dict:      Contains the data for each individual feature-centric vis.
+    feature_act_quantiles:  Contains the quantiles of activation values for each feature (used for rank-ordering feats
+                            in the prompt-centric vis).
+    cfg:                    The vis config, used for the both the data gathering and the vis layout.
+    '''
+    feature_data_dict: dict[int, FeatureData] = field(default_factory=dict)
+    feature_act_quantiles: QuantileCalculator = field(default_factory=QuantileCalculator)
+    cfg: SaeVisConfig = field(default_factory=SaeVisConfig)
+
+    # Some more attributes which we won't save to disk when we save this class
+    model: Optional[HookedTransformer] = None
+    encoder: Optional[AutoEncoder] = None
+    encoder_B: Optional[AutoEncoder] = None
+
+    def update(self, other: "SaeVisData") -> None:
+        '''
+        Updates a SaeVisData object with the data from another SaeVisData object. This is useful during the
+        `get_feature_data` function, since this function is broken up into different groups of features then merged
+        together.
         '''
         if other is None: return
         self.feature_data_dict.update(other.feature_data_dict)
         self.feature_act_quantiles.update(other.feature_act_quantiles)
 
-
-
-class BatchedCorrCoef:
-    '''
-    This class allows me to calculate corrcoef (both Pearson and cosine sim) between two
-    batches of vectors without needing to store them all in memory.
-
-    x.shape = (X, N), y.shape = (Y, N), and we calculate every pairwise corrcoef between
-    the X*Y pairs of vectors.
-
-    It's based on the following formulas (for vectors).
-
-        cos_sim(x, y) = xy_sum / ((x2_sum ** 0.5) * (y2_sum ** 0.5))
-
-        pearson_corrcoef(x, y) = num / denom
-
-            num = n * xy_sum - x_sum * y_sum
-            denom = (n * x2_sum - x_sum ** 2) ** 0.5 * (n * y2_sum - y_sum ** 2) ** 0.5
-
-        ...and all these quantities (x_sum, xy_sum, etc) can be tracked on a rolling basis.
-
-    When we take `.topk`, we're taking this over the y-tensor, in other words we want to keep
-    the X dimension preserved (usually because X is our num_feats dimension).
-    '''
-    def __init__(self):
-        self.n = 0
-        self.x_sum = 0
-        self.y_sum = 0
-        self.xy_sum = 0
-        self.x2_sum = 0
-        self.y2_sum = 0
-
-    def update(self, x: Float[Tensor, "X N"], y: Float[Tensor, "Y N"]):
-        assert x.ndim == 2 and y.ndim == 2, "Both x and y should be 2D"
-        assert x.shape[-1] == y.shape[-1], "x and y should have the same size in the last dimension"
+    @classmethod
+    def create(
+        cls,
+        encoder: AutoEncoder,
+        model: HookedTransformer,
+        tokens: Int[Tensor, "batch seq"],
+        cfg: SaeVisConfig,
+        encoder_B: Optional[AutoEncoder] = None,
+    ) -> "SaeVisData":
         
-        self.n += x.shape[-1]
-        self.x_sum += einops.reduce(x, "X N -> X", "sum")
-        self.y_sum += einops.reduce(y, "Y N -> Y", "sum")
-        self.xy_sum += einops.einsum(x, y, "X N, Y N -> X Y")
-        self.x2_sum += einops.reduce(x ** 2, "X N -> X", "sum")
-        self.y2_sum += einops.reduce(y ** 2, "Y N -> Y", "sum")
+        from sae_vis.data_fetching_fns import get_feature_data
 
-    def corrcoef(self) -> Tuple[Float[Tensor, "X Y"], Float[Tensor, "X Y"]]:
-        cossim_numer = self.xy_sum
-        cossim_denom = torch.sqrt(torch.outer(self.x2_sum, self.y2_sum)) + 1e-6
-        cossim = cossim_numer / cossim_denom
+        sae_vis_data = get_feature_data(
+            encoder = encoder,
+            model = model,
+            tokens = tokens,
+            cfg = cfg,
+            encoder_B = encoder_B,
+        )
+        sae_vis_data.cfg = cfg
+        sae_vis_data.model = model
+        sae_vis_data.encoder = encoder
+        sae_vis_data.encoder_B = encoder_B
 
-        pearson_numer = self.n * self.xy_sum - torch.outer(self.x_sum, self.y_sum)
-        pearson_denom = torch.sqrt(torch.outer(self.n * self.x2_sum - self.x_sum ** 2, self.n * self.y2_sum - self.y_sum ** 2)) + 1e-6
-        pearson = pearson_numer / pearson_denom
+        return sae_vis_data
 
-        return pearson, cossim
-
-    def topk_pearson(self, k: int, largest: bool = True) -> Tuple[TopK, Arr]:
+    def save_feature_centric_vis(
+       self,
+       filename: str | Path,
+       feature_idx: Optional[int] = None,
+    ) -> None:
         '''
-        First element
-        Returns the topk corrcoefs, using Pearson (and taking this over the y-tensor)
+        Returns the HTML string for the view which lets you navigate between different features.
+
+        Args:
+            model:          Used to get the tokenizer (for converting token IDs to string tokens).
+            filename:       The HTML filepath we'll save the visualization to.
+            feature_idx:    This is the default feature index we'll start on. If None, we use the first feature.
         '''
-        pearson, cossim = self.corrcoef()
-        X, Y = cossim.shape
-        # Get pearson topk by actually taking topk
-        pearson_topk = TopK(pearson, k, largest) # shape (X, k)
-        # Get cossim topk by indexing into cossim with the indices of the pearson topk: cossim[X, pearson_indices[X, k]]
-        cossim_values = utils.to_numpy(eindex(cossim, pearson_topk.indices, "X [X k]"))
-        return pearson_topk, cossim_values
+        # Initialize the object we'll eventually get_html from
+        HTML_OBJ = HTML()
 
+        # Set the default argument for the dropdown (i.e. when the page first loads)
+        first_feature = next(iter(self.feature_data_dict)) if (feature_idx is None) else feature_idx
 
+        # Get tokenize function (we only need to define it once)
+        assert self.model is not None
+        decode_fn = get_decode_html_safe_fn(self.model.tokenizer)
+
+        # For each FeatureData object, we get the html_obj for it's feature-centric vis, and merge it with HTML_OBJ
+        for feature, feature_data in self.feature_data_dict.items():
+
+            # Get the HTML object for a single-feature view
+            html_obj = feature_data._get_html_data_feature_centric(decode_fn)
+
+            # Add the JavaScript, and arbitrarily set html_str to be the first feature's html_str (they're all same!)
+            HTML_OBJ.js_data[str(feature)] = deepcopy(html_obj.js_data)
+            if feature == first_feature: HTML_OBJ.html_data = deepcopy(html_obj.html_data)
+        
+        # Save our full HTML
+        HTML_OBJ.get_html(
+            layout = self.cfg.feature_centric_layout,
+            filename = filename,
+            first_key = str(first_feature),
+        )
+
+    def save_prompt_centric_vis(
+        self,
+        prompt: str,
+        filename: str | Path,
+        metric: Optional[str] = None,
+        seq_pos: Optional[int] = None,
+        num_top_features: int = 10,
+    ):
+        '''
+        Returns the HTML string for the view which lets you navigate between different features.
+
+        Args:
+            prompt:     The user-input prompt.
+            model:      Used to get the tokenizer (for converting token IDs to string tokens).
+            filename:   The HTML filepath we'll save the visualization to.
+            metric:     This is the default scoring metric we'll start on. If None, we use 'act_quantile'.
+            seq_pos:    This is the default seq pos we'll start on. If None, we use 0.
+        '''
+        # Initialize the object we'll eventually get_html from
+        HTML_OBJ = HTML()
+
+        # Run forward passes on our prompt, and store the data within each FeatureData object as `self.prompt_data` as
+        # well as returning the scores_dict (which maps from score hash to a list of feature indices & formatted scores)
+        from sae_vis.data_fetching_fns import get_prompt_data
+        scores_dict = get_prompt_data(
+            sae_vis_data = self,
+            prompt = prompt,
+            num_top_features = num_top_features,
+        )
+
+        # Get all possible values for dropdowns
+        str_toks = self.model.tokenizer.tokenize(prompt) # type: ignore
+        str_toks = [t.replace("|", "│") for t in str_toks] # vertical line -> pipe (hacky, so key splitting on | works)
+        str_toks_list = [f"{t!r} ({i})" for i, t in enumerate(str_toks)]
+        metric_list = ["act_quantile", "act_size", "loss_effect"]
+
+        # Get default values for dropdowns
+        first_metric = "act_quantile" or metric
+        first_seq_pos = str_toks_list[0 if seq_pos is None else seq_pos]
+        first_key = f"{first_metric}|{first_seq_pos}"
+
+        # Get tokenize function (we only need to define it once)
+        assert self.model is not None
+        decode_fn = get_decode_html_safe_fn(self.model.tokenizer)
+
+        # For each (metric, seqpos) object, we merge the prompt-centric views of each of the top features, then we merge
+        # these all together into our HTML_OBJ
+        for (_metric, _seq_pos) in itertools.product(metric_list, range(len(str_toks))):
+
+            # Create the key for this given combination of metric & seqpos, and get our top features & scores
+            key = f"{_metric}|{str_toks_list[_seq_pos]}"
+            if key not in scores_dict:
+                continue
+            feature_idx_list, scores_formatted = scores_dict[key]
+            
+            # Create HTML object, to store each feature column for all the top features for this particular key
+            html_obj = HTML()
+
+            for i, (feature_idx, score_formatted) in enumerate(zip(feature_idx_list, scores_formatted)):
+                
+                # Get HTML object at this column (which includes JavaScript to dynamically set the title)
+                html_obj += self.feature_data_dict[feature_idx]._get_html_data_prompt_centric(
+                    decode_fn = decode_fn,
+                    column_idx = i,
+                    bold_idx = _seq_pos,
+                    title = f"<h3>#{feature_idx}<br>{METRIC_TITLES[_metric]} = {score_formatted}</h3><hr>",
+                )
+
+            # Add the JavaScript (which includes the titles for each column)
+            HTML_OBJ.js_data[key] = deepcopy(html_obj.js_data)
+
+            # Set the HTML data to be the one with the most columns (since different options might have fewer cols)
+            if len(HTML_OBJ.html_data) < len(html_obj.html_data):
+                HTML_OBJ.html_data = deepcopy(html_obj.html_data)
+        
+        # Check our first key is in the scores_dict (if not, we should pick a different key)
+        assert first_key in scores_dict, f"Key {first_key} not found in {scores_dict.keys()=}. Have you tried \
+computing your initial data with more features and/or tokens, to make sure you have enough positive examples?"
+
+        # Save our full HTML
+        HTML_OBJ.get_html(
+            layout = self.cfg.prompt_centric_layout,
+            filename = filename,
+            first_key = first_key,
+        )
 
 

@@ -1,6 +1,8 @@
-*demo.html
 *.pkl
 *.pt
 sae_vis/archive_fns.py
 *__pycache__
 mats_sae_training
+# *demo.html
+# _feature*
+# _prompt*

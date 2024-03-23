@@ -5,9 +5,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from dataclasses import dataclass
 from jaxtyping import Float, Int, Bool
-import transformers
 from transformer_lens import utils, HookedTransformer
 from transformer_lens.hook_points import HookPoint
+from typing import overload, Tuple, Literal
 import re
 
 
@@ -74,7 +74,7 @@ class AutoEncoder(nn.Module):
         self.W_dec.grad -= W_dec_grad_proj
 
     @classmethod
-    def load_from_hf(cls, version, verbose=False):
+    def load_from_hf(cls, version):
         """
         Loads the saved autoencoder from HuggingFace. 
 
@@ -89,20 +89,25 @@ class AutoEncoder(nn.Module):
         assert version in ["run1", "run2"]
         version = 25 if version=="run1" else 47
 
-        cfg: dict = utils.download_file_from_hf("NeelNanda/sparse_autoencoder", f"{version}_cfg.json")
-        # There are some unnecessary params in cfg cause they're defined in post_init for config dataclass; we remove them
+        # Download config
+        cfg = utils.download_file_from_hf("NeelNanda/sparse_autoencoder", f"{version}_cfg.json")
+        assert isinstance(cfg, dict)
+        # Remove unnecessary params, and rename d_mlp to d_in
         cfg.pop("buffer_batches", None)
         cfg.pop("buffer_size", None)
-        # Also, we're calling it d_in rather than d_mlp
         cfg["d_in"] = cfg.pop("d_mlp")
-
-        if verbose: pprint.pprint(cfg)
+        # Convert the config to AutoEncoderConfig class, then create the Autoencoder
         cfg = AutoEncoderConfig(**cfg)
         self = cls(cfg=cfg)
-        self.load_state_dict(utils.download_file_from_hf("NeelNanda/sparse_autoencoder", f"{version}.pt", force_is_torch=True))
+
+        # Load in state dict
+        state_dict = utils.download_file_from_hf("NeelNanda/sparse_autoencoder", f"{version}.pt", force_is_torch=True)
+        assert isinstance(state_dict, dict)
+        self.load_state_dict(state_dict)
+
         return self
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"AutoEncoder(d_in={self.cfg.d_in}, dict_mult={self.cfg.dict_mult})"
 
 
@@ -126,8 +131,9 @@ class TransformerLensWrapper(nn.Module):
         self.hook_point = hook_point
 
         # Get the layer (so we can do the early stopping in our forward pass)
-        assert re.match(r'blocks\.\d\.', hook_point), "Error: expecting hook_point to be 'blocks.{layer}.{...}'"
-        self.hook_layer = int(re.search(r'blocks\.(\d)\.', hook_point).group(1))
+        layer_match = re.match(r'blocks\.(\d)\.', hook_point)
+        assert layer_match, "Error: expecting hook_point to be 'blocks.{layer}.{...}'"
+        self.hook_layer = int(layer_match.group(1))
 
         # Get the hook names for the residual stream (final) and residual stream (immediately after hook_point)
         self.hook_point_resid = utils.get_act_name("resid_post", self.hook_layer)
@@ -135,16 +141,39 @@ class TransformerLensWrapper(nn.Module):
         assert self.hook_point_resid in model.hook_dict
         assert self.hook_point_resid_final in model.hook_dict
 
+    @overload
+    def forward(
+        self,
+        tokens: Tensor,
+        return_logits: Literal[True],
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        ...
+
+    @overload
+    def forward(
+        self,
+        tokens: Tensor,
+        return_logits: Literal[False],
+    ) -> tuple[Tensor, Tensor]:
+        ...
     
-    def forward(self, tokens: Int[Tensor, "batch seq"], return_logits: bool = True):
+    def forward(
+        self,
+        tokens: Int[Tensor, "batch seq"],
+        return_logits: bool = True,
+    ):
         '''
-        Forward pass on tokens. Returns (logits, residual, activation) by default, or just (residual, activation) if
-        return_logits=False.
+        Inputs:
+            tokens: Int[Tensor, "batch seq"]
+                The input tokens, shape (batch, seq)
+            return_logits: bool
+                If True, returns (logits, residual, activation)
+                If False, returns (residual, activation)
         '''
 
         # Run with hook functions to store the activations & final value of residual stream
         # If return_logits is False, then we compute the last residual stream value but not the logits
-        output = self.model.run_with_hooks(
+        output: Tensor = self.model.run_with_hooks(
             tokens, 
             # stop_at_layer = (None if return_logits else self.hook_layer),
             fwd_hooks = [
@@ -154,8 +183,8 @@ class TransformerLensWrapper(nn.Module):
         )
 
         # The hook functions work by storing data in model's hook context, so we pop them back out
-        activation = self.model.hook_dict[self.hook_point].ctx.pop("activation")
-        residual = self.model.hook_dict[self.hook_point_resid_final].ctx.pop("activation")
+        activation: Tensor = self.model.hook_dict[self.hook_point].ctx.pop("activation")
+        residual: Tensor = self.model.hook_dict[self.hook_point_resid_final].ctx.pop("activation")
 
         if return_logits:
             return output, residual, activation

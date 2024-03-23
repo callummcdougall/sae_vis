@@ -1,413 +1,369 @@
 from matplotlib import colors
-import copy
-import numpy as np
-from typing import List, Optional, Tuple, Literal
+from typing import Optional, Any
 from pathlib import Path
 import re
+import json
 
-from sae_vis.utils_fns import to_str_tokens, split_string
+from sae_vis.utils_fns import (
+    apply_indent,
+    deep_union,
+)
+from sae_vis.data_config_classes import (
+    SaeVisLayoutConfig,
+    Column,
+)
 
 '''
-Key feature of these functions: the arguments should be descriptive of their role in the actual HTML
-visualisation. If the arguments are super arcane features of the model data, this is bad!
+This file contains all functions which do HTML-specific things. Mostly, this is the `HTML` class, which is the return
+type for the `_get_html_data` methods in the classes in `data_storing_fns.py`. This class contains the HTML string as
+well as JavaScript data in the form of dictionaries. 
+
+Why was the choice made to separate these, rather than just concatenating HTML strings? Because it's useful to keep the
+JavaScript data stored as data, so we can do things like merge it or save it all to a single file / dump it into our
+HTML file as a single variable.
+
+The rough structure of the HTML file returned by `HTML.get_html` is as follows:
+
+```html
+<div id='dropdown-container'></div> # for containing our dropdowns, to navigate between different views
+        
+<div class='grid-container'>
+    <div id='column-0' class="grid-column">
+        ... # HTML string for column 0 (i.e. containing a bunch of components, with IDs distinguishable by suffix)
+    </div>
+    ... # more columns
+</div>
+
+<style>
+... # CSS
+</style>
+
+<script src="https://d3js.org/d3.v6.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function(event) {{
+    const DATA = defineData();      # load in our data
+    createDropdowns(DATA);          # create dropdowns from the data, and also create the vis for the first time
+}});
+
+
+function createDropdowns(DATA) {{
+    const START_KEY = {json.dumps(first_key)};      
+    ...
+
+    function updateDropdowns() {
+        ... 
+        # find the currently selected key, then run createVis(DATA[selectedKey]); 
+    }
+
+    select.on('change', function() {
+        updateDropdowns();      # rebuild vis when dropdown changes
+    });
+
+    updateDropdowns();          # initially build vis
+}}
+
+function createVis(DATA) {{
+    ...
+    # create the vis from the data (this is where all the JavaScript files in this repo get dumped into)
+}}
+
+function defineData() {{
+    const DATA = {json.dumps(self.js_data)};
+    return DATA;
+}}
+# DATA is a nested dictionary, with the following levels:
+#  - 1st level: The keys are "|"-separated options for the dropdowns
+#  - 2nd level: The keys are names like `tokenData`, `featureTablesData`, etc.
+#               These keys correspond to JS files like `tokenScript.js`, `featureTablesScript.js`, etc.
+#               Those scripts use `DATA.tokenData`, `DATA.featureTablesData`, etc.
+</script>
+```
 '''
 
-ROOT_DIR = Path(__file__).parent
-CSS_DIR = ROOT_DIR / "css"
-HTML_DIR = ROOT_DIR / "html"
-JS_DIR = ROOT_DIR / "js"
 
-CSS = "\n".join([
-    (CSS_DIR / "general.css").read_text(),
-    (CSS_DIR / "sequences.css").read_text(),
-    (CSS_DIR / "tables.css").read_text(),
-])
-
-HTML_TOKEN = (HTML_DIR / "token_template.html").read_text()
-HTML_LEFT_TABLES = (HTML_DIR / "left_tables_template.html").read_text()
-HTML_MIDDLE_PLOTS = (HTML_DIR / "middle_plots.html").read_text()
-
-JS_HOVERTEXT_SCRIPT = (JS_DIR / "hovertext.js").read_text()
-
-HISTOGRAM_LINE = """
-    shapes: [{
-        type: 'line',
-        x0: X_VALUE,
-        y0: 0,
-        x1: X_VALUE,
-        y1: LINE_Y,
-        xref: 'x',
-        yref: 'y',
-        line: {
-            color: 'black',
-            width: 2,
-        },
-    }],
-    annotations: [{
-        x: X_VALUE,
-        y: 0.9,
-        xref: 'x',
-        yref: 'paper',
-        text: 'X_STR',
-        showarrow: false,
-        xshift: 28,
-        align: 'left',
-    }],
-"""
 
 
 BG_COLOR_MAP = colors.LinearSegmentedColormap.from_list("bg_color_map", ["white", "darkorange"])
 
-
-def generate_tok_html(
-    vocab_dict: dict,
-    
-    this_token: str,
-    underline_color: str,
-    bg_color: str,
-    is_bold: bool = False,
-
-    feat_act: float = 0.0,
-    contribution_to_loss: float = 0.0,
-    pos_ids: Optional[List[int]] = None,
-    pos_val: Optional[List[float]] = None,
-    neg_ids: Optional[List[int]] = None,
-    neg_val: Optional[List[float]] = None,
-):
+def bgColorMap(x: float):
     '''
-    Creates a single sequence visualisation, by reading from the `token_template.html` file.
+    Returns background color, which is a linear interpolation of x as follows:
 
-    Currently, a bunch of things are randomly chosen rather than actually calculated (we're going for
-    proof of concept here).
+        0: white
+        1: darkorange
     '''
-    html_str = (
-        HTML_TOKEN
-        .replace("this_token", to_str_tokens(vocab_dict, this_token))
-        .replace("feat_activation", f"{feat_act:+.3f}")
-        .replace("feature_ablation", f"{contribution_to_loss:+.3f}")
-        .replace("font_weight", "bold" if is_bold else "normal")
-        .replace("bg_color", bg_color)
-        .replace("underline_color", underline_color)
-    )
+    # assert min(x, 1-x) > -1e-6, f"Expected 0 <= x <= 1, but got {x}"
+    x2 = max(0.0, min(1.0, x))
+    return colors.rgb2hex(BG_COLOR_MAP(x2))
 
-    # If pos_ids is None, this means we don't want to show the positive/negative contributions, so our job is easier!
-    if pos_ids is None:
-        # Remove the pos/neg contributions table
-        html_str = re.sub(r'<br>\n            <div class="half-width-container">.*?</div>', '', html_str, flags=re.DOTALL)
-        html_str = html_str.replace("<br>", "")
-        html_str = html_str.replace(
-            '<div class="tooltip" style="height:275px; width:325px; align-items: center; text-align: center;">',
-            '<div class="tooltip" style="height:100px; width:250px; align-items: center; text-align: center;">'
-        )
-        return html_str
 
-    # Figure out if the activations were zero on previous token, i.e. no predictions were affected
-    is_empty = len(pos_ids) + len(neg_ids) == 0
-    
-    # Get the string tokens
-    pos_str = [to_str_tokens(vocab_dict, i) for i in pos_ids]
-    neg_str = [to_str_tokens(vocab_dict, i) for i in neg_ids]
+def uColorMap(x: float) -> str:
+    '''
+    Returns underline color, which is a linear interpolation of x as follows:
 
-    # Pad out the pos_str etc lists, because they might be short
-    pos_str.extend([""] * 5)
-    neg_str.extend([""] * 5)
-    pos_val.extend([0.0] * 5)
-    neg_val.extend([0.0] * 5)
-    
-    # Make all the substitutions
-    html_str = re.sub("pos_str_(\d)", lambda m: pos_str[int(m.group(1))].replace(" ", "&nbsp;"), html_str)
-    html_str = re.sub("neg_str_(\d)", lambda m: neg_str[int(m.group(1))].replace(" ", "&nbsp;"), html_str)
-    html_str = re.sub("pos_val_(\d)", lambda m: f"{pos_val[int(m.group(1))]:+.3f}", html_str)
-    html_str = re.sub("neg_val_(\d)", lambda m: f"{neg_val[int(m.group(1))]:+.3f}", html_str)
+        -1: blue
+        0 : transparent
+        +1: red
+    '''
+    # assert min(x-1, 1-x) > -1e-6, f"Expected -1 <= x <= 1, but got {x}"
+    x2 = max(-1.0, min(1.0, x))
 
-    # If the effect on loss is nothing (because feature isn't active), replace the HTML output with smth saying this
-    if is_empty:
-        html_str = (
-            html_str
-            .replace('<div class="half-width-container">', '<div class="half-width-container" style="display: none;">') # TODO - regex remove, not have display None?
-            .replace('<!-- No effect! -->', '<div style="font-size:0.8em;">Feature not active on prev token;<br>no predictions were affected.</div>')
-            .replace(
-                '<div class="tooltip" style="height:275px; width:325px; align-items: center; text-align: center;">',
-                '<div class="tooltip" style="height:175px; width:250px; align-items: center; text-align: center;">'
-            )
-        )
-    # Also, delete the columns as appropriate if the number is between 0 and 5
+    if x2 < 0:
+        v = int(255 * (x2 + 1))
+        return f"rgb({v},{v},255)"
     else:
-        html_str = html_str.replace('<tr><td class="right-aligned"><code></code></td><td class="left-aligned">+0.000</td></tr>', "")
-
-    return html_str
-
+        v = int(255 * (1 - x2))
+        return f"rgb(255,{v},{v})"
 
 
-def generate_seq_html(
-    vocab_dict: dict,
-    token_ids: List[str],
-    feat_acts: List[float],
-    contribution_to_loss: List[float],
-    pos_ids: Optional[List[List[int]]] = None,
-    neg_ids: Optional[List[List[int]]] = None,
-    pos_val: Optional[List[List[float]]] = None,
-    neg_val: Optional[List[List[float]]] = None,
-    bold_idx: Optional[int] = None,
-    overflow_x: Literal["break", None] = "break",
-    max_act_color: Optional[float] = None,
-) -> str:
-    assert len(token_ids) == len(feat_acts) == len(contribution_to_loss), f"All input lists must be of the same length, not {len(token_ids)}, {len(feat_acts)}, {len(contribution_to_loss)}"
-
-    # If max_act_color is None, we set it to be the max of feature_acts
-    bg_denom = max_act_color if max_act_color is not None else float(np.max(feat_acts))
-    bg_values = np.maximum(feat_acts, 0.0) / bg_denom
-    underline_values = np.clip(contribution_to_loss, -1, 1).tolist()
-
-    classname = "seq" if (overflow_x is None) else "seq-break"
-    html_output = f'<div class="{classname}">'
-
-    # Sometimes, pos_ids etc might be 1 shorter than token_ids, so we pad them at the start
-    pos_val = copy.deepcopy(pos_val)
-    neg_val = copy.deepcopy(neg_val)
-    if (pos_ids is not None) and (len(pos_ids) == len(token_ids) - 1):
-        pos_ids = [None] + pos_ids
-        pos_val = [None] + pos_val
-        neg_ids = [None] + neg_ids
-        neg_val = [None] + neg_val
-
-    for i in range(len(token_ids)):
-
-        # Get background color, which is {0: transparent, +1: darkorange}
-        bg_val = bg_values[i]
-        bg_color = colors.rgb2hex(BG_COLOR_MAP(bg_val))
-
-        # Get underline color, which is {-1: blue, 0: transparent, +1: red}
-        underline_val = underline_values[i]
-        if underline_val < 0:
-            v = int(255 * (underline_val + 1))
-            underline_color = f"rgb({v}, {v}, 255)"
-        else:
-            v = int(255 * (1 - underline_val))
-            underline_color = f"rgb(255, {v}, {v})"
-
-        html_output += generate_tok_html(
-            vocab_dict = vocab_dict,
-            this_token = token_ids[i],
-            underline_color = underline_color,
-            bg_color = bg_color,
-            pos_ids = None if pos_ids is None else pos_ids[i],
-            neg_ids = None if neg_ids is None else neg_ids[i],
-            pos_val = None if pos_val is None else pos_val[i],
-            neg_val = None if neg_val is None else neg_val[i],
-            is_bold = (bold_idx is not None) and (bold_idx == i),
-            feat_act = feat_acts[i],
-            contribution_to_loss = contribution_to_loss[i],
-        )
-
-    html_output += '</div>'
-
-    return html_output
-
-
-
-
-def generate_left_tables_html(
-    neuron_alignment_indices: List[int],
-    neuron_alignment_values: List[float],
-    neuron_alignment_l1: List[float],
-    correlated_neurons_indices: List[int],
-    correlated_neurons_pearson: List[float],
-    correlated_neurons_l1: List[float],
-    correlated_features_indices: Optional[List[int]] = None,
-    correlated_features_pearson: Optional[List[float]] = None,
-    correlated_features_l1: Optional[List[float]] = None,
-):
-    html_output = HTML_LEFT_TABLES
-
-    # If we don't have the correlated features from encoder_B, remove that table
-    if correlated_features_indices is None:
-        html_output = re.sub(r'<h4>CORRELATED FEATURES \(B-ENCODER\)</h4>.*?</table>', "", html_output, flags=re.DOTALL)
-
-    for (letter, mylist, myformat) in zip(
-        "IVLIPCIPC",
-        [
-            neuron_alignment_indices,
-            neuron_alignment_values,
-            neuron_alignment_l1,
-            correlated_neurons_indices,
-            correlated_neurons_pearson,
-            correlated_neurons_l1,
-            correlated_features_indices,
-            correlated_features_pearson,
-            correlated_features_l1,
-        ],
-        [None, "+.2f", ".1%", None, "+.2f", "+.2f", None, "+.2f", "+.2f"]
-    ):
-        if mylist is None: 
-            continue
-        fn = lambda m: str(mylist[int(m.group(1))]) if myformat is None else format(mylist[int(m.group(1))], myformat)
-        html_output = re.sub(letter + "(\d)", fn, html_output, count=3)
-    
-    return html_output
-    
-
-
-# def format_list(mylist: List[float], fmt: str) -> str:
-#     '''
-#     Formats a list of floats as a string, with a given format.
-#     '''
-#     return ", ".join([format(x, fmt) for x in mylist])
-
-
-
-def generate_middle_plots_html(
-    neg_str: List[str],
-    neg_values: List[float],
-    neg_bg_values: List[float],
-    pos_str: List[str],
-    pos_values: List[float],
-    pos_bg_values: List[float],
-    freq_hist_data_bar_heights: List[float],
-    freq_hist_data_bar_values: List[float],
-    freq_hist_data_tick_vals: List[float],
-    logits_hist_data_bar_heights: List[float],
-    logits_hist_data_bar_values: List[float],
-    logits_hist_data_tick_vals: List[float],
-    frac_nonzero: float,
-    freq_line_posn: Optional[float] = None,
-    logits_line_posn: Optional[float] = None,
-    logits_line_text: Optional[str] = None,
-    freq_line_text: Optional[str] = None,
-    compact: bool = False,
-) -> Tuple[str, str]:
-    '''This generates all the middle data at once, because it comes from a single file.'''
-
-    html_str = HTML_MIDDLE_PLOTS
-
-    # ! Populate the HTML with the logit tables
-
-    # Define the background colors (starts of dark red / blue, gets lighter)
-    neg_bg_colors = [f"rgba(255, {int(255 * (1 - v))}, {int(255 * (1 - v))}, 0.5)" for v in neg_bg_values]
-    pos_bg_colors = [f"rgba({int(255 * (1 - v))}, {int(255 * (1 - v))}, 255, 0.5)" for v in pos_bg_values]
-
-    # Sub in all the values, tokens, and background colors
-    for (letter, mylist) in zip("SVCSVC", [neg_str, neg_values, neg_bg_colors, pos_str, pos_values, pos_bg_colors]):
-        if letter == "S":
-            fn = lambda m: str(mylist[int(m.group(1))]).replace(" ", "&nbsp;")
-        elif letter == "V":
-            fn = lambda m: format(mylist[int(m.group(1))], "+.2f")
-        elif letter == "C":
-            fn = lambda m: str(mylist[int(m.group(1))])
-        html_str = re.sub(letter + "(\d)", fn, html_str, count=10)
-
-    # ! Populate the HTML with the activations density histogram data & the logits histogram data
-
-    # Start off high, cause we want closer to orange than white for the left-most bars
-    freq_bar_values = freq_hist_data_bar_values
-    freq_bar_values_clipped = [(0.4 * max(freq_bar_values) + 0.6 * v) / max(freq_bar_values) for v in freq_bar_values]
-    freq_bar_colors = [colors.rgb2hex(BG_COLOR_MAP(v)) for v in freq_bar_values_clipped]
-
-    html_str = (
-        html_str
-        # Fill in the freq histogram data
-        .replace("BAR_HEIGHTS_FREQ", str(list(freq_hist_data_bar_heights)))
-        .replace("BAR_VALUES_FREQ", str(list(freq_hist_data_bar_values)))
-        .replace("BAR_COLORS_FREQ", str(list(freq_bar_colors)))
-        .replace("TICK_VALS_FREQ", str(list(freq_hist_data_tick_vals)))
-        # Fill in the logits histogram data
-        .replace("BAR_HEIGHTS_LOGITS", str(list(logits_hist_data_bar_heights)))
-        .replace("BAR_VALUES_LOGITS", str(list(logits_hist_data_bar_values)))
-        .replace("TICK_VALS_LOGITS", str(list(logits_hist_data_tick_vals)))
-        # Other things
-        .replace("FRAC_NONZERO", f"{frac_nonzero:.3%}")
-    )
-
-    # If line_posn is supplied, then we add a vertical line to the freq histogram / logits histogram, with label
-    if freq_line_posn is not None:
-        line = (
-            HISTOGRAM_LINE
-            .replace("X_VALUE", f"{freq_line_posn:.3f}")
-            .replace("X_STR", freq_line_text)
-            .replace("LINE_Y", str(max(freq_hist_data_bar_heights)))
-        )
-        html_str = html_str.replace(
-            "var layoutFreq = {",
-            "var layoutFreq = {" + line,
-        )
-    if logits_line_posn is not None:
-        line = (
-            HISTOGRAM_LINE
-            .replace("X_VALUE", f"{logits_line_posn:.3f}")
-            .replace("X_STR", logits_line_text)
-            .replace("LINE_Y", str(max(logits_hist_data_bar_heights)))
-        )
-        html_str = html_str.replace(
-            "var layoutLogits = {",
-            "var layoutLogits = {" + line,
-        )
-
-    # If compact, we extract the table, and return (table, bar charts) rather than both together
-    if compact:
-        html_str = split_string(html_str, str1=r"<!-- Logits table -->", str2=r"<!-- Logits histogram -->")
-        # print([len(x) for x in html_str])
-    
-    return html_str
-    
-
-
-
-def adjust_hovertext(html_str):
+class HTML:
+    html_data: dict[int | tuple[int, int], str]
+    js_data: dict[str, dict[str, Any]]
     '''
-    Annoying HTML thing: I need to make the tooltip for tokens appear outside the bounding box
-    for the sequences, rather than inside (because otherwise it gets cut off, that is it gets
-    cut off if I want to enable x-scrolling on my sequences, which I do!).
+    Contains HTML strings & JavaScript data to populate them.
 
-    This fixes that by using regex operations to do the following:
+    Args:
+        html_data: 
+            Keys are the columns we'll be storing that HTML in; values are the HTML strings. When we `__add__` 2 objects
+            together, we concat these across columns. When we use `get_html`, again we'll concat across columns
+            (wrapping each column's contents in a `grid-item` div), and wrap everything in a `grid-container`.
 
-        (1) Giving IDs to the class="tooltip" and class="token" objects (increasing, i.e. tooltip-1 ...).
-        (2) Extracting the tooltip objects from the sequences, and placing them at the end of the HTML.
-    
-    Note that I've already added CSS (in sequences.css) and JavaScript (in hovertext.html) code
-    which works on the assumption that this function has been run, i.e. it won't look good if this fn
-    doesn't get run.
+        js_data:
+            Keys are names like `tokenData`, `featureTablesData`, etc. Each name has a corresponding JavaScript file
+            like `tokenScript.js`, `featureTablesScript.js`, etc, and those scripts will use `DATA.tokenData`. So the
+            `js_data` object is a standin for this `DATA` dict. When we `__add__` 2 objects together, we merge the
+            dicts. When we call `get_html`, all the scripts will be wrapped in a JavaScript function `load` which has
+            a single argument `DATA`, and we'll handle the data by:
+                
+                - Loading in DATA, either as a direct `DATA = {json.dumps(...)}` or using `fetch`
+
+                - Calling `load`, either on DOMContentLoaded & with `DATA` argument if `js_data_index=False`, or on
+                  slider change & with slider value as argument if `js_data_index=True`
+
+    This is the object returned by each of the `_get_html_data` methods in the classes in `data_storing_fns.py`. It
+    helps standardize the way we create & add to our final HTML vis.
     '''
-    def replace_fn(match: re.Match) -> str:
-        replace_fn.counter += 1
-        return f"class=\"tooltip\" id=\"tooltip-{replace_fn.counter:04}\""
-    replace_fn.counter = 0
-    html_str = re.sub(r'class="tooltip"', replace_fn, html_str)
-    def replace_fn(match: re.Match) -> str:
-        replace_fn.counter += 1
-        return f"class=\"hover-text\" data-tooltip-id=\"tooltip-{replace_fn.counter:04}\""
-    replace_fn.counter = 0
-    html_str = re.sub(r'class="hover-text"', replace_fn, html_str)
+    def __init__(
+        self,
+        html_data: Optional[dict[int | tuple[int, int], str]] = None,
+        js_data: Optional[dict[str, dict[str, Any]]] = None,
+    ) -> None:
+        self.html_data = html_data if (html_data is not None) else {}
+        self.js_data = js_data if (js_data is not None) else {}        
 
-    # Move the tooltip objects to the end of the HTML
-    def extract_tooltip(match: re.Match):
-        extract_tooltip.s += "\n" + match.group(1)
-        return ''
-    extract_tooltip.s = ""
-    tooltip_pattern = r'(<div class="tooltip" id="tooltip-\d{4}".*?</div>)<!-- tooltip end -->'
-    html_str = re.sub(tooltip_pattern, extract_tooltip, html_str, flags=re.DOTALL)
-    html_str += f'<div class="tooltip-container">{extract_tooltip.s}</div>'
+    def __add__(self, other: "HTML") -> "HTML":
+        '''
+        Merges the JavaScript data and the HTML string together, and returns a new HTML object.
 
-    return html_str
+        Further explanation of how this works, for each of the HTML components:
+
+            html_data:
+                The HTML data for the same column is concatenated together. Note that the column keys can be ints like 1
+                or tuples like (1, 0), (1, 1) ... (the latter is what we do when content in a single column overflows
+                onto multiple columns).
 
 
+        This is how we take separate returned objects from the classes in `data_storing_fns.py` and merge them together
+        into a single object.
+        '''
+        # Merge HTML data by concatenating strings in every column
+        html_data = self.html_data.copy()
+        for k, v in other.html_data.items():
+            html_data[k] = html_data.get(k, "") + v
+
+        # Merge JavaScript data by taking union over data dicts for every different file
+        js_data = deep_union(self.js_data, other.js_data)
+
+        return HTML(html_data, js_data)
+    
+    def get_html(
+        self,
+        layout: SaeVisLayoutConfig,
+        filename: str | Path,
+        first_key: str,
+    ) -> None:
+        '''
+        Returns the HTML string, together with JavaScript and CSS. 
+
+        Args:
+            layout:         The `SaeVisLayoutConfig` object which contains important data about the full layout (not
+                            component-specific because this has already been handled; either column-specific e.g. width
+                            or applying to the whole vis e.g. height).
+            filename:       The name of the file to save the HTML to. If `single_file` is False, then we'll take the
+                            stem of this file but with "json" suffix to save the data.
+            first_key:      The key that our vis will be initialized with.
+
+        Further explanation of how this works, for each of the HTML components:
+
+            html_data:
+                We'll concat all the strings for each column together, each each wrapped inside a `grid-column` div, and
+                then the whole thing will be wrapped in `grid-container`.
+
+            js_data:
+                The js_data is initially a dict mapping JavaScript filenames "<name>Script.js" to dictionaries which 
+                will be dumped into the first line of those files
+        '''
+        html_str = ""
+
+        # Check arguments
+        if isinstance(filename, str): filename = Path(filename)
+        assert filename.suffix == ".html", f"Expected {filename.resolve()!r} to have .html suffix"
+        assert filename.parent.exists(), f"Expected {filename.parent.resolve()!r} to exist"
+
+        # ! JavaScript
+
+        # Get path where we store all template JavaScript files
+        js_path = Path(__file__).parent / "js"
+        assert all(file.suffix == ".js" for file in js_path.iterdir()),\
+            f"Expected all files in {js_path.resolve()} to have .js suffix"
+        
+        # Define the contents of the `createVis` function, which takes in some `DATA[key]` object, and uses it to fill
+        # in HTML. We create this by concatenating all files referred to in the keys of the `DATA[key]` object, since
+        # its keys are just JS filenames with the `Script.js` suffix removed. Lastly, note that we put the histograms
+        # scripts first, because hovering over tokens might require a relayout on a histogram, so it needs to exist!
+        js_data_filenames = next(iter(self.js_data.values())).keys()
+        js_data_filenames = [name.replace("Data", "Script.js") for name in js_data_filenames]
+        js_data_filenames = sorted(js_data_filenames, key=lambda x: "histograms" not in x.lower())
+        js_create_vis = "\n".join([(js_path / js_name).read_text() for js_name in js_data_filenames])
+        
+        # Read in the code which will dynamically create dropdowns from the DATA keys
+        js_create_dropdowns = (js_path / "_createDropdownsScript.js").read_text()
+        
+        # Put everything together, in the correct order (including defining DATA & creating dropdowns from it, which
+        # is done in DOMContentLoaded). Note, double curly braces are used to escape single curly braces in f-strings.
+        js_str = f"""
+document.addEventListener("DOMContentLoaded", function(event) {{
+    // Define our data (this is basically where we've dumped the full DATA object; at the end of this file)
+    const DATA = defineData();
+    // Create dropdowns (or not) based on this object, and also create the vis for the first time
+    createDropdowns(DATA);
+}});
+
+// Create dropdowns from DATA object, and trigger creation of the vis (using `START_KEY` as initial key)
+function createDropdowns(DATA) {{
+    const START_KEY = {json.dumps(first_key)};
+{apply_indent(js_create_dropdowns, "    ")}
+}}
+
+function createVis(DATA) {{
+{apply_indent(js_create_vis, "    ")}
+}}
+
+function defineData() {{
+    const DATA = {json.dumps(self.js_data)};
+    return DATA;
+}}
+"""
+                
+        # ! CSS
+
+        # We simply merge the different CSS files together (they're only kept separate for modularity)
+        css_str = "\n".join([
+            file.read_text()
+            for file in (Path(__file__).parent / "css").iterdir()
+        ])
+
+        # ! HTML
+
+        # Get the HTML string (by column)
+        for col_idx, html_str_column in self.html_data.items():
+
+            # Ideally layout.columns[col_idx] would be the column object, but we have to deal with 2 special cases:
+            #   (1) we're doing the prompt-centric view, so we always want to use layout.columns[0]
+            #   (2) our column overflowed, then col_idx is actually a tuple (x, y), and we want layout.columns[x]
+            
+            if isinstance(col_idx, int):
+                # Deal with case (1) here, as well as the general case
+                column = layout.columns[min(len(layout.columns) - 1, col_idx)]
+                column_id = f"column-{col_idx}"
+            elif isinstance(col_idx, tuple):
+                # Deal with case (2) here
+                column = layout.columns[col_idx[0]]
+                column_id = "column-" + "-".join(map(str, col_idx))
+            html_str += "\n\n" + grid_column(html_str_column, id=column_id, column=column, layout=layout)
+
+        # Remove empty style attributes
+        html_str = re.sub(r' style=""', "", html_str)
+        
+        # Create the full HTML string: wrap everything in `grid-container`, and also create object for holding dropdowns
+        full_html_str = f"""
+<div id='dropdown-container'></div>
+        
+<div class='grid-container'>
+{apply_indent(html_str, " " * 4)}
+</div>
+
+<style>
+{css_str}
+</style>
+
+<script src="https://d3js.org/d3.v6.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+
+<script>
+{js_str}
+</script>
+"""
+
+        # TODO - this CSS thing about the border
+        # css_str = CSS
+        # if not(border):
+        #     lines_to_remove = ["border: 1px solid #e6e6e6;", "box-shadow: 0 5px 5px rgba(0, 0, 0, 0.25);"]
+        #     for line in lines_to_remove:
+        #         assert line in css_str, f"Unexpected CSS in css_str: should contain {line!r}"
+        #         css_str = css_str.replace(line, "")
+
+        filename.write_text(full_html_str)
+        
 
 
-def grid_item(
+def grid_column(
     html_contents: str,
-    width: Optional[int] = None,
-    height: Optional[int] = None,
-    left_margin: Optional[int] = None,
+    column: Column,
+    layout: SaeVisLayoutConfig,
+    id: Optional[str] = None,
+    indent: str = " " * 4,
 ) -> str:
     '''
-    Wraps the HTML contents in a 'grid-item' element.
+    Wraps the HTML contents in a 'grid-column' element.
 
-    If width or height are given, the grid item will be rendered at a fixed size (with scrollbars).
+    Args:
+        html_contents:  The string we're wrapping
+        column:         The `Column` object which contains important data about the column, e.g. width
+        layout:         The `SaeVisLayoutConfig` object which contains important data about the full layout (not specific
+                        to a single column), e.g. height
+        id:             The id of the `grid-column` element (this will usually be `column-0`, `column-1`, etc.)
 
-    If left_margin is given, the grid will have a left margin of that many pixels.
+    We pass the `Column` object to this function, because it contains important data about the column, such as its
+    width. We also pass the `SaeVisLayoutConfig` object, because it contains important data about the full layout (not
+    column-specific).
     '''
-    width_str = f"width: {width}px;" if width is not None else ""
-    height_str = f"height: {height}px;" if height is not None else ""
-    margin_str = f"margin-left: {left_margin}px;" if left_margin is not None else ""
+    # height_str = f"height: {height}px; " if height is not None else ""
+    # margin_str = f"margin-left: {left_margin}px;" if left_margin is not None else ""
+
+
+    style_str = ""
+    if (column.width is not None) or (layout.height is not None):
+        width_str = f"width: {column.width}px; " if column.width is not None else ""
+        height_str = f"max-height: {layout.height}px; " if layout.height is not None else ""
+        style_str = f"style='{width_str}{height_str}'"
+
+    id_str = f"id='{id}' " if id is not None else ""
     
-    return f'<div class="grid-item" style="{width_str} {height_str} {margin_str}">{html_contents}</div>'
+    return f'''<div {id_str}class="grid-column" {style_str}>
+{apply_indent(html_contents, indent)}</div>'''
+
+
+
+# # TODO - why doesn't fetch work on browsers? Annoying security thing, means I need to have the data in just one file
+# filename_json = filename.with_suffix(".json")
+# filename_json.write_text(json.dumps(self.js_data))
+# js_str_data_dump = r"""
+# fetch('FILENAME'})
+#   .then(response => response.json())
+#   .then(data => {var DATA = data;})
+#   .catch(error => console.error('Error loading the JSON file:', error));
+# """.replace("FILENAME", filename_json.name)
 

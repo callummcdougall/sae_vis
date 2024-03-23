@@ -1,7 +1,7 @@
 # %%
 
 from jaxtyping import Float, Int, Bool
-from typing import Tuple, Optional, Union, Dict, List, Literal
+from typing import Tuple, Optional, Union, Dict, List, Literal, Any, overload, Callable, Type, TypeVar
 import re
 import torch
 from torch import Tensor
@@ -10,8 +10,18 @@ from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 from tqdm import tqdm
 from dataclasses import dataclass, field
 from dataclasses_json import dataclass_json
+import einops
+from eindex import eindex
+import time
+import json
 
 from transformer_lens import utils
+
+T = TypeVar('T')
+
+# from rich.progress import ProgressColumn, Task # MofNCompleteColumn
+# from rich.text import Text
+# from rich.table import Column
 
 
 def get_device() -> torch.device:
@@ -47,7 +57,7 @@ def k_largest_indices(
     x: Float[Tensor, "rows cols"],
     k: int,
     largest: bool = True,
-    buffer: Tuple[int, int] = (5, 5),
+    buffer: Tuple[int, int] = (5, -5),
 ) -> Int[Tensor, "k 2"]:
     '''
     Args:
@@ -59,15 +69,13 @@ def k_largest_indices(
         largest:
             Whether to return the indices for the largest or smallest values
         buffer:
-            How many positions to avoid at the start and end of the sequence
+            Positions to avoid at the start / end of the sequence, i.e. we can include the slice buffer[0]: buffer[1]
 
     Returns:
-        The indices of the top or bottom `k` elements in `x`. In other words, output[i, :] is the
-        (row, column) index of the i-th largest/smallest element in `x`. Note that we restrict
-        `column` to be in the range `buffer[0] : -buffer[1]`. This is so that we make sure each
-        token we're choosing has some surrounding context in that sequence.
+        The indices of the top or bottom `k` elements in `x`. In other words, output[i, :] is the (row, column) index of
+        the i-th largest/smallest element in `x`.
     '''
-    x = x[:, buffer[0]:-buffer[1]]
+    x = x[:, buffer[0]: buffer[1]]
     indices = x.flatten().topk(k=k, largest=largest).indices
     rows = indices // x.size(1)
     cols = indices % x.size(1) + buffer[0]
@@ -91,7 +99,7 @@ def random_range_indices(
     x: Float[Tensor, "batch seq"],
     k: int,
     bounds: Tuple[float, float],
-    buffer: Tuple[int, int] = (5, 5),
+    buffer: Tuple[int, int] = (5, -5),
 ) -> Int[Tensor, "k 2"]:
     '''
     Args:
@@ -103,14 +111,13 @@ def random_range_indices(
         bounds:
             The range of values to consider (so we can get quantiles)
         buffer:
-            How many positions to avoid at the start and end of the sequence
+            Positions to avoid at the start / end of the sequence, i.e. we can include the slice buffer[0]: buffer[1]
 
     Returns:
-        Same thing as `k_largest_indices`, but the difference is that we're using quantiles rather than
-        the top/bottom k.
+        Same thing as `k_largest_indices`, but the difference is that we're using quantiles rather than top/bottom k.
     '''
     # Limit x, because our indices (bolded words) shouldn't be too close to the left/right of sequence
-    x = x[:, buffer[0]:-buffer[1]]
+    x = x[:, buffer[0]: buffer[1]]
 
     # Creat a mask for where x is in range, and get the indices as a tensor of shape (k, 2)
     mask = (bounds[0] <= x) & (x <= bounds[1])
@@ -125,49 +132,153 @@ def random_range_indices(
 
 
 
-def create_vocab_dict(tokenizer: PreTrainedTokenizerFast) -> Dict[int, str]:
-    '''
-    Creates a vocab dict by replacing all the annoying special tokens with their HTML representations.
-    '''
-    vocab_dict: Dict[str, int] = tokenizer.vocab
-    vocab_dict = {v: process_str_tok(k) for k, v in vocab_dict.items()}
-    return vocab_dict
+# TODO - solve the `get_decode_html_safe_fn` issue
+# The verion using `tokenizer.decode` is much slower, but Stefan's raised issues about it not working correctly for e.g.
+# Cyrillic characters. I think patching the `vocab_dict` in some way is the best solution.
+
+# def get_decode_html_safe_fn(tokenizer, html: bool = False) -> Callable[[int | list[int]], str | list[str]]:
+#     '''
+#     Creates a tokenization function on single integer token IDs, which is HTML-friendly.
+#     '''
+#     def decode(token_id: int | list[int]) -> str | list[str]:
+#         '''
+#         Check this is a single token
+#         '''
+#         if isinstance(token_id, int):
+#             str_tok = tokenizer.decode(token_id)
+#             return process_str_tok(str_tok, html=html)
+#         else:
+#             str_toks = tokenizer.batch_decode(token_id)
+#             return [process_str_tok(str_tok, html=html) for str_tok in str_toks]
+    
+#     return decode
+
+
+def get_decode_html_safe_fn(tokenizer, html: bool = False) -> Callable[[int | list[int]], str | list[str]]:
+
+    vocab_dict = {v: k for k, v in tokenizer.vocab.items()} # type: ignore
+
+    def decode(token_id: int | list[int]) -> str | list[str]:
+        '''
+        Check this is a single token
+        '''
+        if isinstance(token_id, int):
+            str_tok = vocab_dict.get(token_id, "UNK")
+            return process_str_tok(str_tok, html=html)
+        else:
+            if isinstance(token_id, torch.Tensor):
+                token_id = token_id.tolist()
+            return [decode(tok) for tok in token_id] # type: ignore
+        
+    return decode
+
+# # Code to test this function:
+# from transformer_lens import HookedTransformer
+# model = HookedTransformer.from_pretrained("gelu-1l")
+# unsafe_token = "<"
+# unsafe_token_id = model.tokenizer.encode(unsafe_token, return_tensors="pt")[0].item() # type: ignore
+# assert get_decode_html_safe_fn(model.tokenizer)(unsafe_token_id) == "<"
+# assert get_decode_html_safe_fn(model.tokenizer, html=True)(unsafe_token_id) == "&lt;"
 
 
 
-def process_str_tok(str_tok: str) -> str:
-    '''
-    Takes a string token, and does the necessary formatting to produce the right HTML output.
-    This involves dealing with spaces, newlines (and other backslashes), and angle brackets.
-    '''
-    # Get rid of the quotes and apostrophes, and replace them with their HTML representations
-    str_tok = str_tok.replace("'", "&apos;").replace('"', "&quot;")
-    str_tok = repr(str_tok)[1:-1]  # repr turns \n into \\n, while slicing removes the quotes from the repr
+HTML_CHARS = {
+    "\\": "&bsol;",
+    "<": "&lt;",
+    ">": "&gt;",
+    ")": "&#41;",
+    "(": "&#40;",
+    "[": "&#91;",
+    "]": "&#93;",
+    "{": "&#123;",
+    "}": "&#125;",
+}
+HTML_ANOMALIES = {
+    "âĢĭ": "&#8203;",
+    "Ġ": "&nbsp;",
+    "Ċ": "&bsol;n",
+}
+HTML_QUOTES = {
+    "'": "&apos;",
+    '"': "&quot;",
+}
+HTML_ALL = {**HTML_CHARS, **HTML_QUOTES, " ": "&nbsp;"}
 
-    # Deal with other HTML or special characters
-    html_replacements = {"Ġ": " ", " ": "&nbsp;", "\\": "&bsol;", "<": "&lt;", ">": "&gt;"}
-    for k, v in html_replacements.items():
+def process_str_tok(str_tok: str, html: bool = True) -> str:
+    '''
+    Takes a string token, and does the necessary formatting to produce the right HTML output. There are 2 things that
+    might need to be changed:
+
+        (1) Anomalous chars like Ġ should be replaced with their normal Python string representations
+            e.g. "Ġ" -> " "
+        (2) Special HTML characters like "<" should be replaced with their HTML representations
+            e.g. "<" -> "&lt;", or " " -> "&nbsp;"
+
+    We always do (1), the argument `html` determines whether we do (2) as well.
+    '''
+    for k, v in HTML_ANOMALIES.items():
         str_tok = str_tok.replace(k, v)
+
+    if html:
+        # Get rid of the quotes and apostrophes, and replace them with their HTML representations
+        for k, v in HTML_QUOTES.items():
+            str_tok = str_tok.replace(k, v)
+        # repr turns \n into \\n, while slicing removes the quotes from the repr
+        str_tok = repr(str_tok)[1:-1]
+
+        # Apply the map from special characters to their HTML representations
+        for k, v in HTML_CHARS.items():
+            str_tok = str_tok.replace(k, v)
 
     return str_tok
 
 
+def unprocess_str_tok(str_tok: str) -> str:
+    '''
+    Performs the reverse of the `process_str_tok` function, i.e. maps from HTML representations back to their original
+    characters. This is useful when e.g. our string is inside a <code>...</code> element, because then we have to use
+    the literal characters.
+    '''
+    for k, v in HTML_ALL.items():
+        str_tok = str_tok.replace(v, k)
+    
+    return str_tok
 
-def to_str_tokens(vocab_dict: Dict[int, str], tokens: Union[int, List[int], torch.Tensor]):
+
+
+
+@overload
+def to_str_tokens(
+    decode_fn: Callable[[int | list[int]], str | list[str]],
+    tokens: int,
+) -> str:
+    ...
+
+@overload
+def to_str_tokens(
+    decode_fn: Callable[[int | list[int]], str | list[str]],
+    tokens: List[int],
+) -> List[str]:
+    ...
+
+def to_str_tokens(
+    decode_fn: Callable[[int | list[int]], str | list[str]],
+    tokens: Union[int, List[int], torch.Tensor],
+) -> str | Any:
     '''
     Helper function which converts tokens to their string representations, but (if tokens is a tensor) keeps
     them in the same shape as the original tensor (i.e. nested lists).
     '''
     # Deal with the int case separately
     if isinstance(tokens, int):
-        return vocab_dict[tokens]
+        return decode_fn(tokens)
 
     # If the tokens are a (possibly nested) list, turn them into a tensor
     if isinstance(tokens, list):
         tokens = torch.tensor(tokens)
 
     # Get flattened list of tokens
-    str_tokens = [vocab_dict[t] for t in tokens.flatten().tolist()]
+    str_tokens = [decode_fn(t) for t in tokens.flatten().tolist()]
 
     # Reshape
     return np.reshape(str_tokens, tokens.shape).tolist()
@@ -213,7 +324,7 @@ class TopK:
 
     @property
     def shape(self) -> Tuple[int]:
-        return self.values.shape
+        return tuple(self.values.shape) # type: ignore
     
     def numel(self) -> int:
         return self.values.size
@@ -420,11 +531,12 @@ class QuantileCalculator:
         values_is_1d = (values.ndim == 1)
         if values_is_1d:
             values = values.unsqueeze(1)
-        if batch_indices is None:
-            batch_indices = slice(None)
+
+        # Get an object to slice into the tensor (along batch dimension)
+        my_slice = slice(None) if batch_indices is None else batch_indices
 
         # Find the quantiles of these values (i.e. the values between 0 and 1)
-        quantile_indices = torch.searchsorted(quantile_data[batch_indices], values) # shape [batch data_dim]
+        quantile_indices = torch.searchsorted(quantile_data[my_slice], values) # shape [batch data_dim]
         quantiles = quantiles[quantile_indices]
 
         # Also get the precisions (which we do using a separate searchsorted, only over the range dividers)
@@ -465,7 +577,11 @@ if MAIN:
 # %%
 
 
-def split_string(input_string, str1, str2):
+def split_string(
+    input_string: str,
+    str1: str,
+    str2: str,
+) -> tuple[str, str]:
     assert str1 in input_string and str2 in input_string, "Error: str1 and str2 must be in input_string"
     pattern = f'({re.escape(str1)}.*?){re.escape(str2)}'
     match = re.search(pattern, input_string, flags=re.DOTALL)
@@ -474,7 +590,7 @@ def split_string(input_string, str1, str2):
         remaining_string = input_string.replace(between_str1_str2, '')
         return between_str1_str2, remaining_string
     else:
-        return None, input_string
+        return "", input_string
 
 # Example usage
 if MAIN:
@@ -488,5 +604,356 @@ if MAIN:
     str2 = r"<!-- Logits histogram -->"
     print(split_string(input_string, str1, str2))
 
+
 # %%
+    
+
+def apply_indent(text: str, prefix: str) -> str:
+    '''
+    Indents a string at every new line (e.g. by spaces or tabs).
+    '''
+    return "\n".join(prefix + line for line in text.split("\n"))
+
+
+# %%
+
+def deep_union(dict1: dict, dict2: dict, path: str = "") -> dict:
+    '''
+    Returns a deep union of dictionaries (recursive operation). In other words, if `dict1` and `dict2` have the same
+    keys then the value of that key will be the deep union of the values.
+
+    Also, base case where one of the values is a list: we concatenate the lists together
+
+    Examples:
+        # Normal union
+        deep_union({1: 2}, {3: 4}) == {1: 2, 3: 4}
+
+        # 1-deep union
+        deep_union(
+            {1: {2: [3, 4]}},
+            {1: {3: [3, 4]}}
+        ) == {1: {2: [3, 4], 3: [3, 4]}}
+
+        # 2-deep union
+        assert deep_union(
+            {"x": {"y": {"z": 1}}},
+            {"x": {"y": {"w": 2}}},
+        ) == {"x": {"y": {"z": 1, "w": 2}}}
+
+        # List concatenation
+        assert deep_union(
+            {"x": [1, 2]},
+            {"x": [3, 4]},
+        ) == {"x": [1, 2, 3, 4]}
+
+    The `path` accumulates the key/value paths from the recursive calls, so that we can see the full dictionary path
+    which caused problems (not just the end-nodes).
+    '''
+    result = dict1.copy()
+
+    # For each new key & value in dict2
+    for key2, value2 in dict2.items():
+
+        # If key not in result, then we have a simple case: just add it to the result
+        if key2 not in result:
+            result[key2] = value2
+
+        # If key in result, both should values be either dicts (then we recursively merge) or lists (then we concat). If
+        # not, then we throw an error unconditionally (even if values are the same).
+        else:
+            value1 = result[key2]
+
+            # Both dicts
+            if isinstance(value1, dict) and isinstance(value2, dict):
+                result[key2] = deep_union(value1, value2, path=f"{path}[{key2!r}]")
+            
+            # Both lists
+            elif isinstance(value1, list) and isinstance(value2, list):
+                result[key2] = value1 + value2
+            
+            # Error
+            else:
+                path1 = f"dict{path}[{key2!r}] = {value1!r}"
+                path2 = f"dict{path}[{key2!r}] = {value2!r}"
+                raise ValueError(f'Merge failed. Conflicting paths:\n{path1}\n{path2}')
+
+    return result
+
+if MAIN:
+    # Normal union
+    assert deep_union({1: 2}, {3: 4}) == {1: 2, 3: 4}
+
+    # 1-deep union
+    assert deep_union(
+        {1: {2: [3, 4]}},
+        {1: {3: [3, 4]}}
+    ) == {1: {2: [3, 4], 3: [3, 4]}}
+
+    # 2-deep union
+    assert deep_union(
+        {"x": {"y": {"z": 1}}},
+        {"x": {"y": {"w": 2}}},
+    ) == {"x": {"y": {"z": 1, "w": 2}}}
+
+    # List concatenation
+    assert deep_union(
+        {"x": [1, 2]},
+        {"x": [3, 4]},
+    ) == {"x": [1, 2, 3, 4]}
+
+# %%
+
+
+
+class BatchedCorrCoef:
+    '''
+    This class helps compute corrcoef (Pearson & cosine sim) between 2 batches of vectors, without having to store the
+    entire batch in memory. 
+    
+    How exactly does it work? We exploit the formula below (x, y assumed to be vectors here), which writes corrcoefs in
+    terms of scalars which can be computed on a rolling basis.
+
+        cos_sim(x, y) = xy_sum / ((x2_sum ** 0.5) * (y2_sum ** 0.5))
+
+        pearson_corrcoef(x, y) = num / denom
+            num = n * xy_sum - x_sum * y_sum
+            denom = (n * x2_sum - x_sum ** 2) ** 0.5 * (n * y2_sum - y_sum ** 2) ** 0.5
+
+    This class batches this computation, i.e. x.shape = (X, N), y.shape = (Y, N), where:
+        N = batch_size * seq_len, i.e. it's the number of datapoints we have
+        x = features of our original encoder
+        y = features of our encoder-B, or neurons of our original model
+
+    So we can e.g. compute the correlation coefficients for every combination of feature in encoder and model neurons,
+    then take topk to find the most correlated neurons for each feature.
+    '''
+    def __init__(self) -> None:
+        self.n = 0
+
+    def update(self, x: Float[Tensor, "X N"], y: Float[Tensor, "Y N"]) -> None:
+        assert x.ndim == 2 and y.ndim == 2, "Both x and y should be 2D"
+        assert x.shape[-1] == y.shape[-1], "x and y should have the same size in the last dimension"
+
+        # If this is the first update step, then we need to initialise the sums
+        if self.n == 0:
+            self.x_sum = torch.zeros(x.shape[0], device=x.device)
+            self.y_sum = torch.zeros(y.shape[0], device=y.device)
+            self.xy_sum = torch.zeros(x.shape[0], y.shape[0], device=x.device)
+            self.x2_sum = torch.zeros(x.shape[0], device=x.device)
+            self.y2_sum = torch.zeros(y.shape[0], device=y.device)
+        
+        # Next, update the sums
+        self.n += x.shape[-1]
+        self.x_sum += einops.reduce(x, "X N -> X", "sum")
+        self.y_sum += einops.reduce(y, "Y N -> Y", "sum")
+        self.xy_sum += einops.einsum(x, y, "X N, Y N -> X Y")
+        self.x2_sum += einops.reduce(x ** 2, "X N -> X", "sum")
+        self.y2_sum += einops.reduce(y ** 2, "Y N -> Y", "sum")
+
+    def corrcoef(self) -> Tuple[Float[Tensor, "X Y"], Float[Tensor, "X Y"]]:
+
+        cossim_numer = self.xy_sum
+        cossim_denom = torch.sqrt(torch.outer(self.x2_sum, self.y2_sum)) + 1e-6
+        cossim = cossim_numer / cossim_denom
+
+        pearson_numer = self.n * self.xy_sum - torch.outer(self.x_sum, self.y_sum)
+        pearson_denom = torch.sqrt(torch.outer(self.n * self.x2_sum - self.x_sum ** 2, self.n * self.y2_sum - self.y_sum ** 2)) + 1e-6
+        pearson = pearson_numer / pearson_denom
+
+        return pearson, cossim
+
+    def topk_pearson(
+        self,
+        k: int,
+        largest: bool = True,
+    ) -> Tuple[list[list[int]], list[list[float]], list[list[float]]]:
+        '''
+        Takes topk of the pearson corrcoefs over the y-dimension (e.g. giving us the most correlated neurons or most
+        correlated encoder-B features for each encoder feature).
+
+        Args:
+            k: int
+                Number of top indices to take (usually 3, for the left-hand tables)
+            largest: bool
+                If True, then we take the largest k indices. If False, then we take the smallest k indices.
+
+        Returns:
+            pearson_indices: list[list[int]]
+                y-indices which are most correlated with each x-index (in terms of pearson corrcoef)
+            pearson_values: list[list[float]]
+                Values of pearson corrcoef for each of the topk indices
+            cossim_values: list[list[float]]
+                Values of cosine similarity for each of the topk indices
+        '''
+        # Get correlation coefficient, using the formula from corrcoef method
+        pearson, cossim = self.corrcoef()
+
+        # Get the top pearson values
+        pearson_topk = TopK(pearson, k, largest) # shape (X, k)
+
+        # Get the cossim values for the top pearson values, i.e. cossim_values[X, k] = cossim[X, pearson_indices[X, k]]
+        cossim_values = eindex(cossim, pearson_topk.indices, "X [X k]")
+        
+        return pearson_topk.indices.tolist(), pearson_topk.values.tolist(), cossim_values.tolist()
+
+
+
+@dataclass_json
+@dataclass
+class SaveableDataclass:
+    '''
+    This is a base class for all the dataclasses in this file. It's used to ensure that we can save and load all the
+    dataclasses in this file to and from JSON.
+    '''
+    def to_dict(self) -> dict:
+        return self.to_dict()
+
+
+    def save_json(self, filename: str, verbose: bool = False)  -> None:
+        '''
+        Saves the object to a JSON file (and optionally returns dict).
+
+        Args:
+            filename: if None then we don't save, if string then we save here
+            verbose: if True, then we print out time taken for saving
+        '''
+        t0 = time.time()
+
+        # Save object, converted to a dictionary
+        assert filename.endswith(".json"), "Expected filename to end with '.json'"
+        json.dump(self.to_dict(), open(filename, "w"))
+        
+        # Print time taken to save
+        if verbose:
+            print(f"Saved to JSON in {time.time() - t0:.2f} seconds")
+        
+
+    @classmethod
+    def load_json(cls, filename: str, verbose: bool = False) -> "SaveableDataclass":
+        '''
+        Loads the dataclass object from a saved filename (or directly from a dict).
+
+        Args:
+            filename: filename we're loading data from
+        '''
+        t0 = time.time()
+
+        # Load in the data (as a dictionary)
+        assert filename.endswith(".json"), "Expected filename to end with '.json'"
+        data_dict = json.load(open(filename, "r"))
+
+        # Get dataclass object from dictionary
+        instance = cls.from_dict(data_dict) # type: ignore
+
+        # Print time taken to load
+        if verbose:
+            print(f"Loaded in {time.time() - t0:.2f} seconds")
+        
+        return instance
+
+
+
+@dataclass_json
+@dataclass
+class HistogramData(SaveableDataclass):
+    '''
+    This class contains all the data necessary to construct a single histogram (e.g. the logits or feat acts histogram).
+    See diagram in readme:
+
+        https://github.com/callummcdougall/sae_vis#data_storing_fnspy
+
+    We don't need to store the entire `data` tensor, so we initialize instances of this class using the `from_data`
+    method, which computes statistics from the input data tensor then discards it.
+
+        bar_heights: The height of each bar in the histogram
+        bar_values: The value of each bar in the histogram
+        tick_vals: The tick values we want to use for the histogram
+    '''
+    bar_heights: list[float] = field(default_factory=list)
+    bar_values: list[float] = field(default_factory=list)
+    tick_vals: list[float] = field(default_factory=list)
+    title: Optional[str] = None
+
+    @classmethod
+    def from_data(
+        cls: Type[T],
+        data: Tensor,
+        n_bins: int,
+        tickmode: Literal["ints", "5 ticks"],
+        title: Optional[str],
+    ) -> T:
+        '''
+        Args:
+            data: 1D tensor of data which will be turned into histogram
+            n_bins: Number of bins in the histogram
+            line_posn: List of possible positions of vertical lines we want to put on the histogram
+        
+        Returns a HistogramData object, with data computed from the inputs. This is to support the goal of only storing
+        the minimum necessary data (and making it serializable, for JSON saving).
+        '''
+        # There might be no data, if the feature never activates
+        if data.numel() == 0:
+            return cls()
+
+        # Get min and max of data
+        max_value = data.max().item()
+        min_value = data.min().item()
+
+        # Divide range up into 40 bins
+        bin_size = (max_value - min_value) / n_bins
+        bin_edges = torch.linspace(min_value, max_value, n_bins + 1)
+        # Calculate the heights of each bin
+        bar_heights = torch.histc(data, bins=n_bins).int().tolist()
+        bar_values = [round(x, 5) for x in (bin_edges[:-1] + bin_size / 2).tolist()]
+
+        # Choose tickvalues
+        # TODO - improve this, it's currently a bit hacky (currently I only use the 5 ticks mode)
+        assert tickmode in ["ints", "5 ticks"]
+        if tickmode == "ints":
+            top_tickval = int(max_value)
+            tick_vals = torch.arange(0, top_tickval + 1, 1).tolist()
+        elif tickmode == "5 ticks":
+            # Ticks chosen in multiples of 0.1, set to ensure the longer side of {positive, negative} is 3 ticks long
+            if max_value > -min_value:
+                tickrange = 0.1 * int(1e-4 + max_value / (3 * 0.1)) + 1e-6
+                num_positive_ticks = 3
+                num_negative_ticks = int(-min_value / tickrange)
+            else:
+                tickrange = 0.1 * int(1e-4 + -min_value / (3 * 0.1)) + 1e-6
+                num_negative_ticks = 3
+                num_positive_ticks = int(max_value / tickrange)
+            # Tick values = merged list of negative ticks, zero, positive ticks
+            tick_vals = merge_lists(
+                reversed([-tickrange * i for i in range(1, 1+num_negative_ticks)]),
+                [0], # zero (always is a tick)
+                [tickrange * i for i in range(1, 1+num_positive_ticks)],
+            )
+            tick_vals = [round(t, 1) for t in tick_vals]
+
+        return cls(
+            bar_heights = bar_heights,
+            bar_values = bar_values,
+            tick_vals = tick_vals,
+            title = title,
+        )
+
+
+# %%
+
+
+def max_or_1(myList, abs: bool = False) -> float | int:
+    '''
+    Returns max of a list, or 1 if the list is empty. 
+
+    Args:
+        myList: List of numbers
+        abs: If True, then we take the max of the absolute values of the list
+    '''
+    if len(myList) == 0:
+        return 1
+    
+    if abs:
+        return max(max(x, -x) for x in myList)
+    else:
+        return max(myList)
 

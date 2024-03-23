@@ -1,25 +1,20 @@
-
 /* Default font & appearance for the words in the sequence, before being hovered over */
-
 code {
     font-family: Consolas, Menlo, Monaco;
 }
-
-.seq-hidden {
-    overflow-x: hidden;
-}
-.seq-break {
-    display: flex;
-    flex-wrap: wrap;
-}
-.seq-scroll {
+/* Margin at the bottom of every sequence group, plus handle how overflow works (maybe not necessary) */
+.seq-group {
     overflow-x: auto;
     overflow-y: visible;
     padding-top: 5px;
     padding-bottom: 10px;
-    margin-bottom: 0px;
+    margin-bottom: 10px;
 }
-
+/* Margin between single sequences */
+.seq {
+    margin-bottom: 11px;
+}
+/* Styling for each token in a sequence */
 .token {
     font-family: Consolas, Menlo, Monaco;
     font-size: 0.9em;
@@ -30,12 +25,7 @@ code {
     display: inline;
     white-space: pre-wrap;
 }
-.seq {
-    margin-bottom: 8px;
-}
-
 /* All the messy hovering stuff! */
-
 .hover-text {
     position: relative;
     cursor: pointer;
@@ -48,26 +38,16 @@ code {
     text-align: center;
     border-radius: 10px;
     padding: 5px;
-    /* bottom: 100%;
-    left: 50%;
-    margin-left: -150px;
-    margin-bottom: 5px; */
     box-shadow: 0 4px 8px rgba(0, 0, 0, 0.25);
     align-items: center;
     justify-content: center;
     overflow: hidden;
     font-family: 'system-ui';
     font-size: 1.1em;
-    /* pointer-events: none; */
     display: none;
     position: fixed;
+    z-index: 1000;
 }
-/* .tooltip-below {
-    top: 100%;
-    bottom: auto;
-    margin-bottom: 0;
-    margin-top: 5px;
-} */
 .token:hover {
     border-top: 3px solid black;
 }
@@ -78,56 +58,4 @@ code {
 .hover-text:hover + .tooltip-container .tooltip {
     display: block;
 }
-
-
-
-table {
-    border-collapse: collapse;
-    width: -moz-fit-content;
-    width: -webkit-fit-content;
-    width: fit-content;
-    margin-left: auto;
-    margin-right: auto;
-    font-size: 0.8em;
-}
-
-td {
-    border: none;
-    padding: 2px 4px;
-    white-space: nowrap;
-}
-
-.right-aligned {
-    text-align: right;
-}
-
-.left-aligned {
-    text-align: left;
-}
-
-.center-aligned {
-    text-align: center;
-    padding-bottom: 8px;
-}
-
-table code {
-    background-color: #ddd;
-    padding: 2px;
-    border-radius: 3px;
-}
-
-.table-container {
-    width: 100%;
-}
-
-.half-width-container {
-    display: flex;
-}
-
-.half-width {
-    width: 50%;
-    margin-right: -4px;
-}
-
-
 
