@@ -31,6 +31,7 @@ class AutoEncoderConfig:
     enc_dtype: str = "fp32"
     remove_rare_dir: bool = False
     model_batch_size: int = 64
+    device: str = "cuda"
 
     def __post_init__(self):
         '''Using kwargs, so that we can pass in a dict of parameters which might be
@@ -56,7 +57,7 @@ class AutoEncoder(nn.Module):
         self.b_dec = nn.Parameter(torch.zeros(cfg.d_in, dtype=cfg.dtype))
         self.W_dec.data[:] = self.W_dec / self.W_dec.norm(dim=-1, keepdim=True)
 
-        self.to("cuda")
+        self.to(cfg.device)
 
     def forward(self, x: torch.Tensor):
         x_cent = x - self.b_dec
@@ -131,8 +132,8 @@ class TransformerLensWrapper(nn.Module):
         self.hook_point = hook_point
 
         # Get the layer (so we can do the early stopping in our forward pass)
-        layer_match = re.match(r'blocks\.(\d)\.', hook_point)
-        assert layer_match, "Error: expecting hook_point to be 'blocks.{layer}.{...}'"
+        layer_match = re.match(r'blocks\.(\d+)\.', hook_point)
+        assert layer_match, f"Error: expecting hook_point to be 'blocks.{{layer}}.{{...}}', but got {hook_point!r}"
         self.hook_layer = int(layer_match.group(1))
 
         # Get the hook names for the residual stream (final) and residual stream (immediately after hook_point)
