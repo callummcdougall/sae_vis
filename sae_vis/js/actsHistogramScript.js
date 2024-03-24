@@ -1,10 +1,10 @@
 // ! Using `DATA.actsHistogramData` to fill in the activations histogram
 
-function createActsLine(color) {
+function createActsLine(color, width, height) {
     return {
-        type: 'line', line: {color: color, width: 2},
+        type: 'line', line: {color: color, width: width},
         x0: 0, x1: 0, xref: 'x',
-        y0: 0, y1: 1, yref: 'paper',
+        y0: 0, y1: height, yref: 'paper',
         visible: false,
     }
 }
@@ -41,7 +41,7 @@ function setupActsHistogram(histId, histData) {
         paper_bgcolor: 'rgba(0,0,0,0)',
         plot_bgcolor: 'rgba(0,0,0,0)',
         responsive: true,
-        shapes: [createActsLine('black'), createActsLine('#888')],
+        shapes: [createActsLine('black', 2, 1.0), createActsLine('black', 1, 0.9)],
         annotations: [createActsAnnotation(), createActsAnnotation()],
     };
 

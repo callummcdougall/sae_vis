@@ -282,8 +282,9 @@ class SaeVisLayoutConfig:
                 # For each config parameter of that component
                 for (param, value) in asdict(vis_component).items():
 
-                    # Get line break at the end of each component, except for the final column
-                    suffix = "\n" if (component_idx == n_components - 1) and (col_idx < n_columns - 1) else ""
+                    # Get line break at the end of each component, except for the final component in the final column
+                    suffix = "\n" if (component_idx == n_components - 1) else ""
+                    if suffix == "\n" and (col_idx == n_columns - 1): suffix = ""
 
                     # Get argument description, and its default value
                     desc = vis_component.help_dict.get(param, "")

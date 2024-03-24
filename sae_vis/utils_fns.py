@@ -608,11 +608,29 @@ if MAIN:
 # %%
     
 
-def apply_indent(text: str, prefix: str) -> str:
+def apply_indent(
+    text: str,
+    prefix: str,
+    first_line_indented: bool = False,
+) -> str:
     '''
-    Indents a string at every new line (e.g. by spaces or tabs).
+    Indents a string at every new line (e.g. by spaces or tabs). This is useful for formatting when we're dumping things
+    into an HTML file.
+
+    Args:
+        text:
+            The text to indent
+        prefix:
+            The string to add at the start of each line
+        first_line_indented:
+            Whether the first line should be indented. If False, then the first line will be left as it is.
     '''
-    return "\n".join(prefix + line for line in text.split("\n"))
+    text_indented = "\n".join(prefix + line for line in text.split("\n"))
+    if not first_line_indented:
+        text_indented = text_indented[len(prefix):]
+    
+    return text_indented
+
 
 
 # %%

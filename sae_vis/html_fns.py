@@ -43,41 +43,26 @@ The rough structure of the HTML file returned by `HTML.get_html` is as follows:
 
 <script>
 document.addEventListener("DOMContentLoaded", function(event) {{
-    const DATA = defineData();      # load in our data
-    createDropdowns(DATA);          # create dropdowns from the data, and also create the vis for the first time
+    const ALL_DATA = defineData();      # load in our data
+    createDropdowns(ALL_DATA);          # create dropdowns from the data, and also create the vis for the first time
 }});
 
-
-function createDropdowns(DATA) {{
-    const START_KEY = {json.dumps(first_key)};      
-    ...
-
-    function updateDropdowns() {
-        ... 
-        # find the currently selected key, then run createVis(DATA[selectedKey]); 
-    }
-
-    select.on('change', function() {
-        updateDropdowns();      # rebuild vis when dropdown changes
-    });
-
-    updateDropdowns();          # initially build vis
+function createDropdowns(ALL_DATA) {{
+    // Dynamically creates dropdowns from the data (by parsing its keys), and causes `createVis` to be called whenever
+    // the dropdowns change. This includes the initial call to `createVis` with the first key, which is START_KEY.
 }}
 
 function createVis(DATA) {{
-    ...
-    # create the vis from the data (this is where all the JavaScript files in this repo get dumped into)
+    // Create the vis from the data (this is where all the JavaScript files in this repo get dumped into). The DATA
+    // object here will be ALL_DATA[key] for some key (the key will be a feature index in the feature-centric vis, and
+    // it'll be something like "act_quantile|'first' (6)" in the prompt-centric vis).
 }}
 
 function defineData() {{
-    const DATA = {json.dumps(self.js_data)};
-    return DATA;
+    // Load in ALL_DATA, which is a nested dictionary: keys are "|"-separated options for the dropdowns, and values are
+    // dictionaries {"tokenData": ..., "featureTablesData: ...}. See the correspondingly named JavaScript files to
+    // understand how this data is used (within the `createVis` function).
 }}
-# DATA is a nested dictionary, with the following levels:
-#  - 1st level: The keys are "|"-separated options for the dropdowns
-#  - 2nd level: The keys are names like `tokenData`, `featureTablesData`, etc.
-#               These keys correspond to JS files like `tokenScript.js`, `featureTablesScript.js`, etc.
-#               Those scripts use `DATA.tokenData`, `DATA.featureTablesData`, etc.
 </script>
 ```
 '''
@@ -183,6 +168,7 @@ class HTML:
         layout: SaeVisLayoutConfig,
         filename: str | Path,
         first_key: str,
+        # dropdown_names: list[str], # TODO - not implemented yet, I'm guessing best way is to dump this in like START_KEY
     ) -> None:
         '''
         Returns the HTML string, together with JavaScript and CSS. 
@@ -235,25 +221,22 @@ class HTML:
         # is done in DOMContentLoaded). Note, double curly braces are used to escape single curly braces in f-strings.
         js_str = f"""
 document.addEventListener("DOMContentLoaded", function(event) {{
-    // Define our data (this is basically where we've dumped the full DATA object; at the end of this file)
-    const DATA = defineData();
-    // Create dropdowns (or not) based on this object, and also create the vis for the first time
-    createDropdowns(DATA);
+    const ALL_DATA = defineData();
+    createDropdowns(ALL_DATA);
 }});
 
-// Create dropdowns from DATA object, and trigger creation of the vis (using `START_KEY` as initial key)
 function createDropdowns(DATA) {{
     const START_KEY = {json.dumps(first_key)};
-{apply_indent(js_create_dropdowns, "    ")}
+    {apply_indent(js_create_dropdowns, "    ")}
 }}
 
 function createVis(DATA) {{
-{apply_indent(js_create_vis, "    ")}
+    {apply_indent(js_create_vis, "    ")}
 }}
 
 function defineData() {{
-    const DATA = {json.dumps(self.js_data)};
-    return DATA;
+    const ALL_DATA = {json.dumps(self.js_data)};
+    return ALL_DATA;
 }}
 """
                 
@@ -264,6 +247,7 @@ function defineData() {{
             file.read_text()
             for file in (Path(__file__).parent / "css").iterdir()
         ])
+        # TODO - add ability for people to control the border (this will be an attribute of the layout config object, like height is, and we'll implement it by directly editing `css_str`)
 
         # ! HTML
 
@@ -292,7 +276,7 @@ function defineData() {{
 <div id='dropdown-container'></div>
         
 <div class='grid-container'>
-{apply_indent(html_str, " " * 4)}
+    {apply_indent(html_str, " " * 4)}
 </div>
 
 <style>
@@ -306,14 +290,11 @@ function defineData() {{
 {js_str}
 </script>
 """
-
-        # TODO - this CSS thing about the border
-        # css_str = CSS
-        # if not(border):
-        #     lines_to_remove = ["border: 1px solid #e6e6e6;", "box-shadow: 0 5px 5px rgba(0, 0, 0, 0.25);"]
-        #     for line in lines_to_remove:
-        #         assert line in css_str, f"Unexpected CSS in css_str: should contain {line!r}"
-        #         css_str = css_str.replace(line, "")
+        
+        # Polish the HTML string in some ways (e.g. there's lots of line breaks below 'grid-container' which we don't want)
+        pattern = r"<div class='grid-container'>\n\n+"
+        full_html_str = re.sub(pattern, r"<div class='grid-container'>\n", full_html_str)
+        
 
         filename.write_text(full_html_str)
         
@@ -344,16 +325,19 @@ def grid_column(
     # margin_str = f"margin-left: {left_margin}px;" if left_margin is not None else ""
 
 
+    # Set styles for this column
     style_str = ""
     if (column.width is not None) or (layout.height is not None):
         width_str = f"width: {column.width}px; " if column.width is not None else ""
         height_str = f"max-height: {layout.height}px; " if layout.height is not None else ""
         style_str = f"style='{width_str}{height_str}'"
 
+    # Set ID for this column
     id_str = f"id='{id}' " if id is not None else ""
     
-    return f'''<div {id_str}class="grid-column" {style_str}>
-{apply_indent(html_contents, indent)}</div>'''
+    # Define full HTML string
+    html_str = f'''<div {id_str}class="grid-column" {style_str}>\n{apply_indent(html_contents, indent)}</div>'''
+    return html_str
 
 
 

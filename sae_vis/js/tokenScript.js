@@ -1,5 +1,3 @@
-// ! Using `DATA.tokenData` to fill in the feature tables
-
 function addLineHistogram(histogramID, shapeIndex, tok, xValue) {
     // Updates histogram with a line (if the histogram exists)
     // shapeIndex 0 is for on-hover, 1 is for permanent line
@@ -25,7 +23,7 @@ function removeLineHistogram(histogramID, shapeIndex) {
 }
 
 function generateTokHtmlElement(
-    parent, tok, tokID, uColor, bgColor, isBold, featAct, tokenLogit, lossEffect, posToks, posVal, negToks, negVal, permanentLine, hide, hoverAbove, idSuffix,
+    parent, tok, tokID, uColor, bgColor, isBold, featAct, tokenLogit, lossEffect, posToks, posVal, negToks, negVal, permanentLine, hide, idSuffix,
 ) {
     // Figure out if previous token was active (this affects the construction of the tooltip)
     let prevTokenActive = posToks.length + negToks.length > 0;
@@ -46,8 +44,37 @@ function generateTokHtmlElement(
         .style("font-weight", isBold ? "bold" : "normal")
         .text(tok);
 
+    // If hide is true, then we just show a box saying "no information was calculated for this token"
+    if (hide) {
+        // First define the tooltip div (added to the parent element, i.e. it's a sibling of the token span)
+        let tooltipHeight = 70;
+        let tooltipWidth = 150;
+        let tooltipDiv = parent.append("div")
+            .attr("class", "tooltip")
+            .style("height", tooltipHeight + "px")
+            .style("width", tooltipWidth + "px")
+            .style("font-size", "0.85em")
+            .style("white-space", "pre-wrap")
+            .style("align-items", "center")
+            .style("text-align", "center")
+            .style("padding", "15px")
+            .html("No information was calculated for this token, since you used compute_buffer=False.");
+
+        // Add dynamic behaviour: show the tooltip on hover, and also add lines to the two histograms
+        tokenSpan.on('mouseover', function() {
+            tooltipDiv.style('display', 'flex');
+            tooltipDiv.style('position', 'fixed');
+        })
+        tokenSpan.on('mousemove', function(event) {
+            tooltipDiv.style('left', `${event.clientX - tooltipWidth / 2}px`);
+            tooltipDiv.style('top', `${event.clientY + 20}px`);
+        });
+        tokenSpan.on('mouseout', function() {
+            tooltipDiv.style('display', 'none');
+        });
+        
     // If we're not hiding (because we only generated data for the bolded tokens), then create tooltip & add it on hover
-    if (!hide) {
+    } else { 
 
         // First define the tooltip div (added to the parent element, i.e. it's a sibling of the token span)
         let tooltipHeight = prevTokenActive ? 270 : 160;
@@ -101,7 +128,7 @@ function generateTokHtmlElement(
         // If previous token is not active, we add a message instead
         } else {
             tableContainer.append("div")
-                .style("font-size", "0.8em")
+                .style("font-size", "0.85em")
                 .html("Feature not active on prev token;<br>no predictions were affected.");
         }
 
@@ -114,12 +141,7 @@ function generateTokHtmlElement(
         })
         tokenSpan.on('mousemove', function(event) {
             tooltipDiv.style('left', `${event.clientX - tooltipWidth / 2}px`);
-            // This is different depending on whether we're hovering above or below
-            if (hoverAbove) {
-                tooltipDiv.style('top', `${event.clientY - tooltipHeight - 35}px`);
-            } else {
-                tooltipDiv.style('top', `${event.clientY + 20}px`);
-            }
+            tooltipDiv.style('top', `${event.clientY + 20}px`);
         });
         tokenSpan.on('mouseout', function() {
             tooltipDiv.style('display', 'none');
@@ -184,7 +206,6 @@ Object.entries(DATA.tokenData).forEach(([seqGroupID, seqGroupData]) => {
                 tokData["negVal"] || [],            // most-negative token values
                 tokData["permanentLine"] || false,  // do we show a permanent line on histogram?
                 tokData["hide"] || false,           // do we suppress hoverdata for this token?
-                tokData["hoverAbove"] || false,     // do we show the hoverdata above the token?
                 idSuffix,                           // suffix for the histogram ID which the hoverline will be added to
             );
         });
@@ -193,5 +214,3 @@ Object.entries(DATA.tokenData).forEach(([seqGroupID, seqGroupData]) => {
     const t1 = performance.now(); // End timing
     console.log(`HTML for ${seqGroupID} generated in ${(t1 - t0).toFixed(1)} ms`);
 });
-
-
