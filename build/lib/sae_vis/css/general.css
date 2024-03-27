@@ -1,0 +1,53 @@
+/* Styling of the top-level container */
+.grid-container {
+    font-family: 'system-ui';
+    border: 1px solid #e6e6e6;
+    background-color: #fff;
+    margin: 30px 10px;
+    box-shadow: 0 5px 5px rgba(0, 0, 0, 0.25);
+    display: grid;
+    justify-content: start;
+    grid-template-columns: auto;
+    overflow-x: auto;
+    overflow-y: visible;
+    grid-auto-flow: column;
+    white-space: nowrap;
+    padding-bottom: 12px;
+    padding-top: 35px;
+    padding-left: 20px;
+}
+/* Styling each grid column (note, the max-height controls height of grid-container) */
+.grid-column {
+    margin-left: 20px;
+    padding-right: 20px;
+    width: max-content;
+    overflow-y: auto;
+    max-height: 750px;
+}
+/* Styling the scrollbars */
+::-webkit-scrollbar {
+    height: 10px;
+    width: 10px;
+}
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+}
+::-webkit-scrollbar-thumb {
+    background: #999;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+/* Margin at the bottom of each histogram */
+.plotly-hist {
+    margin-bottom: 25px;
+}
+/* Margins below the titles (most subtitles are h4, except for the prompt-centric view which has h2 titles) */
+h4 {
+    margin-top: 0px;
+    margin-bottom: 10px;
+}
+/* Some space below the <hr> line in prompt-centric vis */
+hr {
+    margin-bottom: 35px;
+}

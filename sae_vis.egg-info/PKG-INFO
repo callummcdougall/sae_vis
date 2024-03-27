@@ -1,0 +1,9 @@
+Metadata-Version: 2.1
+Name: sae-vis
+Version: 0.2
+Summary: Open-source SAE visualizer, based on Anthropic's published visualizer.
+Home-page: https://github.com/callummcdougall/sae_visualizer
+Author: Callum McDougall
+Author-email: cal.s.mcdougall@gmail.com
+Classifier: Programming Language :: Python :: 3
+Classifier: Operating System :: OS Independent

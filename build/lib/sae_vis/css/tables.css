@@ -1,0 +1,81 @@
+table {
+    border: unset;
+    color: black;
+    border-collapse: collapse;
+    width: -moz-fit-content;
+    width: -webkit-fit-content;
+    width: fit-content;
+    margin-left: auto;
+    margin-right: auto;
+    font-size: 0.8em;
+}
+table.table-left tr {
+    border-bottom: 1px solid #eee;
+    padding: 15px;
+}
+table.table-left td {
+    padding: 3px 4px;
+}
+table.table-left {
+    width: 100%;
+}
+table.table-left td.left-aligned {
+    max-width: 120px;
+    overflow-x: hidden;
+}
+td {
+    border: none;
+    padding: 2px 4px;
+    white-space: nowrap;
+}
+.right-aligned {
+    text-align: right;
+}
+.left-aligned {
+    text-align: left;
+}
+.center-aligned {
+    text-align: center;
+    padding-bottom: 8px;
+}
+table code {
+    background-color: #ddd;
+    padding: 2px;
+    border-radius: 3px;
+}
+.table-container {
+    width: 100%;
+}
+.half-width-container {
+    display: flex;
+}
+.half-width {
+    width: 50%;
+    margin-right: -4px;
+}
+
+/* Feature tables should have space below them, also they should have a min column width */
+div.feature-tables table {
+    margin-bottom: 25px;
+    min-width: 250px;
+}
+/* Configure logits table container (i.e. the thing containing the smaller and larger tables) */
+div.logits-table {
+    min-width: 375px;
+    display: flex;
+    overflow-x: hidden;
+    margin-bottom: 20px;
+}
+/* Code is always bold in this table (this is just the neg/pos string tokens) */
+div.logits-table code {
+    font-weight: bold;
+}
+/* Set width of the tables inside the container (so they can stack horizontally), also put a gap between them */
+div.logits-table > div.positive {
+    width: 47%;
+}
+div.logits-table > div.negative {
+    width: 47%;
+    margin-right: 5%;
+}
+

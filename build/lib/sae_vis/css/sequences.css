@@ -1,0 +1,61 @@
+/* Default font & appearance for the words in the sequence, before being hovered over */
+code {
+    font-family: Consolas, Menlo, Monaco;
+}
+/* Margin at the bottom of every sequence group, plus handle how overflow works (maybe not necessary) */
+.seq-group {
+    overflow-x: auto;
+    overflow-y: visible;
+    padding-top: 5px;
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+}
+/* Margin between single sequences */
+.seq {
+    margin-bottom: 11px;
+}
+/* Styling for each token in a sequence */
+.token {
+    font-family: Consolas, Menlo, Monaco;
+    font-size: 0.9em;
+    border-top-left-radius: 3px;
+    border-top-right-radius: 3px;
+    padding: 1px;
+    color: black;
+    display: inline;
+    white-space: pre-wrap;
+}
+/* All the messy hovering stuff! */
+.hover-text {
+    position: relative;
+    cursor: pointer;
+    display: inline-block; /* Needed to contain the tooltip */
+    box-sizing: border-box;
+}
+.tooltip {
+    background-color: #fff;
+    color: #333;
+    text-align: center;
+    border-radius: 10px;
+    padding: 5px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.25);
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    font-family: 'system-ui';
+    font-size: 1.1em;
+    display: none;
+    position: fixed;
+    z-index: 1000;
+}
+.token:hover {
+    border-top: 3px solid black;
+}
+.tooltip-container {
+    position: absolute;
+    pointer-events: none;
+}
+.hover-text:hover + .tooltip-container .tooltip {
+    display: block;
+}
+
