@@ -1,11 +1,10 @@
 import time
 import numpy as np
-from typing import List
 import math
 import torch
-from torch import nn, Tensor
+from torch import Tensor
 from eindex import eindex
-from typing import Optional, List, Dict, Tuple, Union
+from typing import Optional, Union
 import torch.nn.functional as F
 import einops
 from jaxtyping import Float, Int
@@ -14,10 +13,6 @@ from rich.table import Table
 from collections import defaultdict
 from transformer_lens import utils, HookedTransformer
 from tqdm.auto import tqdm
-# from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn
-# from transformers import AutoTokenizer
-# from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
-# from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 Arr = np.ndarray
 
@@ -79,7 +74,7 @@ The 2 most important functions are:
 
 def compute_feat_acts(
     model_acts: Float[Tensor, "batch seq d_in"],
-    feature_idx: List[int],
+    feature_idx: list[int],
     encoder: AutoEncoder,
     encoder_B: Optional[AutoEncoder] = None,
     corrcoef_neurons: Optional[BatchedCorrCoef] = None,
@@ -92,22 +87,22 @@ def compute_feat_acts(
     Args:
         model_acts: Float[Tensor, "batch seq d_in"]
             The activations of the model, which the SAE was trained on.
-        feature_idx: List[int]
+        feature_idx: list[int]
             The features we're computing the activations for. This will be used to index the encoder's weights.
         encoder: AutoEncoder
             The encoder object, which we use to calculate the feature activations.
         encoder_B: Optional[AutoEncoder]
             The encoder-B object, which we use to calculate the feature activations.
         corrcoef_neurons: Optional[BatchedCorrCoef]
-            The object which stores the rolling correlation coefficients between feature activations & neurons.
+            The object storing the minimal data necessary to compute corrcoef between feature activations & neurons.
         corrcoef_encoder_B: Optional[BatchedCorrCoef]
-            The object which stores the rolling correlation coefficients between feature activations & encoder-B features.
+            The object storing minimal data to compute corrcoef between feature activations & encoder-B features.
     '''
     # Get the feature act direction by indexing encoder.W_enc, and the bias by indexing encoder.b_enc
     feature_act_dir = encoder.W_enc[:, feature_idx] # (d_in, feats)
     feature_bias = encoder.b_enc[feature_idx] # (feats,)
 
-    # Calculate & store the feature activations (we need to store them so we can get the right-hand visualisations later)
+    # Calculate & store feature activations (we need to store them so we can get the sequence & histogram vis later)
     x_cent = model_acts - encoder.b_dec
     feat_acts_pre = einops.einsum(x_cent, feature_act_dir, "batch seq d_in, d_in feats -> batch seq feats")
     feat_acts = F.relu(feat_acts_pre + feature_bias)
@@ -119,7 +114,7 @@ def compute_feat_acts(
             einops.rearrange(model_acts, "batch seq d_in -> d_in (batch seq)"),
         )
         
-    # Calculate encoder-B feature activations (we don't need to store them, cause it's just for the left-hand visualisations)
+    # Calculate encoder-B feature acts (we don't need to store them, cause it's just for the left-side feature tables)
     if corrcoef_encoder_B is not None:
         assert encoder_B is not None,\
             "Error: you need to supply an encoder-B object if you want to calculate encoder-B feature activations."
@@ -140,7 +135,7 @@ def compute_feat_acts(
 @torch.inference_mode()
 def parse_feature_data(
     tokens: Int[Tensor, "batch seq"],
-    feature_indices: Union[int, List[int]],
+    feature_indices: Union[int, list[int]],
     all_feat_acts: Float[Tensor, "... feats"],
     feature_resid_dir: Float[Tensor, "feats d_model"],
     all_resid_post: Float[Tensor, "... d_model"],
@@ -149,69 +144,88 @@ def parse_feature_data(
     feature_out_dir: Optional[Float[Tensor, "feats d_out"]] = None,
     corrcoef_neurons: Optional[BatchedCorrCoef] = None,
     corrcoef_encoder_B: Optional[BatchedCorrCoef] = None,
-    progress: Optional[List[tqdm]] = None,
-) -> Tuple[SaeVisData, Dict[str, float]]:
-    """Convert generic activation data into a SaeVisData object, which can be used to create
-    the feature-centric visualisation.
+    progress: Optional[list[tqdm]] = None,
+) -> tuple[SaeVisData, dict[str, float]]:
+    """Convert generic activation data into a SaeVisData object, which can be used to create the feature-centric vis.
 
-    This function exists so that feature dashboards can be generated without using our AutoEncoder or TransformerLensWrapper classes. 
-    final_resid_acts + W_U are used for the logit lens.
+    This function exists so that feature dashboards can be generated without using our AutoEncoder or
+    TransformerLens(Wrapper) classes. We pass through W_U & other data needed for computing the logit lens, so we don't
+    need the models.
 
     Args:
         tokens: Int[Tensor, "batch seq"]
             The tokens we'll be using to get the feature activations.
-        feature_indices: Union[int, List[int]]
+        
+        feature_indices: Union[int, list[int]]
             The features we're actually computing. These might just be a subset of the model's full features.
+        
         all_feat_acts: Float[Tensor, "... feats"]
             The activations values of the features across the batch & sequence.
+        
         feature_resid_dir: Float[Tensor, "feats d_model"]
             The directions that each feature writes to the residual stream.
             For example, feature_resid_dir = encoder.W_dec[feature_indices] # [feats d_autoencoder]
-            if 
+        
         all_resid_post: Float[Tensor, "... d_model"]
             The activations of the final layer of the model before the unembed. 
+        
         W_U: Float[Tensor, "d_model d_vocab"]
             The model's unembed weights for the logit lens.
+        
         cfg: SaeVisConfig
             Feature visualization parameters, containing a bunch of other stuff. See the SaeVisConfig docstring for
             more information.
+        
         feature_out_dir: Optional[Float[Tensor, "feats d_out"]]
             The directions that each SAE feature writes to the residual stream. This will be the same as 
             feature_resid_dir if the SAE is in the residual stream (as we will assume if it not provided)
             For example, feature_out_dir = encoder.W_dec[feature_indices] # [feats d_autoencoder]
+        
         corrcoef_neurons: Optional[BatchedCorrCoef]
-            The object which stores the rolling correlation coefficients between feature activations & neurons.
+            The object storing the minimal data necessary to compute corrcoef between feature activations & neurons.
+
         corrcoef_encoder_B: Optional[BatchedCorrCoef]
-            The object which stores the rolling correlation coefficients between feature activations & encoder-B features.
-        progress_bars: Dict[str, tqdm]
-            A dictionary containing the progress bars for the forward passes and the sequence data. This is used to
-            update the progress bars as the computation progresses.
+            The object storing minimal data to compute corrcoef between feature activations & encoder-B features.
+
+        progress: Optional[list[tqdm]]
+            An optional list containing progress bars for the forward passes and the sequence data. This is used to
+            update the progress bars as the computation runs.
     
     Returns:
         multi_feature_data: SaeVisData
             Containing data for creating each feature visualization, as well as data for rank-ordering the feature
             visualizations when it comes time to make the prompt-centric view (the `feature_act_quantiles` attribute).
 
-        time_log: Dict[str, float]
+        time_logs: dict[str, float]
             A dictionary containing the time taken for each step of the computation. This is optionally printed at the
             end of the `get_feature_data` function, if `cfg.verbose` is set to True.
     """
-    t2 = time.time()
+    time_logs = {
+        "(4) Getting data for tables": 0.0,
+        "(5) Getting data for histograms": 0.0,
+        "(6) Getting data for sequences": 0.0,
+        "(7) Getting data for quantiles": 0.0,
+    }
+    t0 = time.time()
     
     # Make feature_indices a list, for convenience
     if isinstance(feature_indices, int): feature_indices = [feature_indices]
 
-    assert feature_resid_dir.shape[0] == len(feature_indices), f"The number of features in feature_resid_dir ({feature_resid_dir.shape[0]}) does not match the number of feature indices ({len(feature_indices)})"
+    assert feature_resid_dir.shape[0] == len(feature_indices),\
+        f"Num features in feature_resid_dir ({feature_resid_dir.shape[0]}) doesn't match {len(feature_indices)=}"
     
     if feature_out_dir is not None:
-        assert feature_out_dir.shape[0] == len(feature_indices), f"The number of features in feature_out_dir ({feature_resid_dir.shape[0]}) does not match the number of feature indices ({len(feature_indices)})"
+        assert feature_out_dir.shape[0] == len(feature_indices),\
+            f"Num features in feature_out_dir ({feature_resid_dir.shape[0]}) doesn't match {len(feature_indices)=}"
 
     # ! Data setup code (defining the main objects we'll eventually return)
-    feature_data_dict: Dict[int, FeatureData] = {feat: FeatureData(feat, cfg) for feat in feature_indices}
+    feature_data_dict: dict[int, FeatureData] = {feat: FeatureData(feat, cfg) for feat in feature_indices}
 
-    # Go through the user-supplied layout object, and find all the configs
+    # We're using `cfg.feature_centric_layout` to figure out what data we'll need to calculate during this function
     layout = cfg.feature_centric_layout
-    assert isinstance(layout, SaeVisLayoutConfig), f"Error: cfg.feature_centric_layout must be a SaeVisLayoutConfig object, got {type(layout)}"
+    assert isinstance(layout, SaeVisLayoutConfig),\
+        f"Error: cfg.feature_centric_layout must be a SaeVisLayoutConfig object, got {type(layout)}"
+
 
     # ! Calculate all data for the left-hand column visualisations, i.e. the 3 tables
 
@@ -249,7 +263,8 @@ def parse_feature_data(
                 correlated_features_cossim = encB_cossim[i],
             )
 
-    t3 = time.time()
+    time_logs["(4) Getting data for tables"] = time.time() - t0
+    t0 = time.time()
 
 
     # ! Get all data for the middle column visualisations, i.e. the two histograms & the logit table
@@ -297,7 +312,8 @@ def parse_feature_data(
                     top_token_ids = top_token_ids,
                 )
 
-    t4 = time.time()
+    time_logs["(5) Getting data for histograms"] = time.time() - t0
+    t0 = time.time()
 
 
     # ! Calculate all data for the right-hand visualisations, i.e. the sequences
@@ -315,27 +331,22 @@ def parse_feature_data(
                 W_U = W_U,
                 seq_cfg = layout.seq_cfg,
             )
+            # Update the 2nd progress bar (fwd passes & getting sequence data dominates the runtime of these computations)
             if progress is not None:
                 progress[1].update(1)
 
-    t5 = time.time()
+    time_logs["(6) Getting data for sequences"] = time.time() - t0
+    t0 = time.time()
+
+
+    # ! Get the quantiles, which will be useful for the prompt-centric visualisation
+    feature_act_quantiles = QuantileCalculator.from_data(data=einops.rearrange(all_feat_acts, "b s feats -> feats (b s)"))
+    time_logs["(7) Getting data for quantiles"] = time.time() - t0
+    t0 = time.time()
+
 
     # ! Return the output, as a dict of FeatureData items
-
-    # Also get the quantiles, which will be useful for the prompt-centric visualisation
-    feature_act_quantiles = QuantileCalculator.from_data(data=einops.rearrange(all_feat_acts, "b s feats -> feats (b s)"))
-
-    t6 = time.time()
-
-    time_logs = {
-        "Getting data for tables": t3 - t2,
-        "Getting data for histograms": t4 - t3,
-        "Getting data for sequences": t5 - t4,
-        "Generating quantiles": t6 - t5,
-    }
-
     multi_feature_data = SaeVisData(feature_data_dict, feature_act_quantiles, cfg)
-
     return multi_feature_data, time_logs
 
 
@@ -347,11 +358,10 @@ def _get_feature_data(
     encoder_B: Optional[AutoEncoder],
     model: TransformerLensWrapper,
     tokens: Int[Tensor, "batch seq"],
-    feature_indices: Union[int, List[int]],
+    feature_indices: Union[int, list[int]],
     cfg: SaeVisConfig,
-    progress: List[tqdm],
-    # progress: Progress,
-) -> Tuple[SaeVisData, Dict[str, float]]:
+    progress: Optional[list[tqdm]] = None,
+) -> tuple[SaeVisData, dict[str, float]]:
     '''
     Gets data that will be used to create the sequences in the feature-centric HTML visualisation.
     
@@ -373,26 +383,33 @@ def _get_feature_data(
         tokens: Int[Tensor, "batch seq"]
             The tokens we'll be using to get the feature activations.
 
-        feature_indices: Union[int, List[int]]
+        feature_indices: Union[int, list[int]]
             The features we're actually computing. These might just be a subset of the model's full features.
 
         cfg: SaeVisConfig
             Feature visualization parameters, containing a bunch of other stuff. See the SaeVisConfig docstring for
             more information.
 
-        progress: List[tqdm] (Progress)
-            The tqdm (rich) progress bar we use for tracking the computation.
+        progress: Optional[list[tqdm]]
+            An optional list containing progress bars for the forward passes and the sequence data. This is used to
+            update the progress bars as the computation runs.
 
     Returns:
         multi_feature_data: SaeVisData
             Containing data for creating each feature visualization, as well as data for rank-ordering the feature
             visualizations when it comes time to make the prompt-centric view (the `feature_act_quantiles` attribute).
 
-        time_log: Dict[str, float]
+        time_log: dict[str, float]
             A dictionary containing the time taken for each step of the computation. This is optionally printed at the
             end of the `get_feature_data` function, if `cfg.verbose` is set to True.
     '''
     # ! Boring setup code
+
+    time_logs = {
+        "(1) Initialization": 0.0,
+        "(2) Forward passes to gather model activations": 0.0,
+        "(3) Computing feature acts from model acts": 0.0,
+    }
 
     t0 = time.time()
 
@@ -403,21 +420,13 @@ def _get_feature_data(
     token_minibatches = (tokens,) if cfg.minibatch_size_tokens is None else tokens.split(cfg.minibatch_size_tokens)
     token_minibatches = [tok.to(device) for tok in token_minibatches]
 
-
     # ! Data setup code (defining the main objects we'll eventually return, for each of 5 possible vis components)
-
-    feature_data_dict: Dict[int, FeatureData] = {feat: FeatureData(feat, cfg) for feat in feature_indices}
-    # sequence_data_dict: Dict[int, SequenceMultiGroupData] = {}
-    # feature_tables_data_dict: Dict[int, FeatureTablesData] = {}
-    # logits_histogram_data_dict: Dict[int, LogitsHistogramData] = {}
-    # acts_histogram_data_dict: Dict[int, ActsHistogramData] = {}
-    # logits_table_data_dict: Dict[int, LogitsTableData] = {}
 
     # Create lists to store the feature activations & final values of the residual stream
     all_resid_post = []
     all_feat_acts = []
 
-    # Create objects to store the rolling correlation coefficients (for left tables), if we're using them
+    # Create objects to store the data for computing correlation coefficients (for left tables), if we're using them
     corrcoef_neurons = BatchedCorrCoef()
     corrcoef_encoder_B = BatchedCorrCoef() if encoder_B is not None else None
 
@@ -425,25 +434,35 @@ def _get_feature_data(
     feature_out_dir = encoder.W_dec[feature_indices] # [feats d_autoencoder]
     feature_resid_dir = to_resid_dir(feature_out_dir, model) # [feats d_model]
 
-    t1 = time.time()
+    time_logs["(1) Initialization"] = time.time() - t0
 
     # ! Compute & concatenate together all feature activations & post-activation function values
 
     for minibatch in token_minibatches:
+
+        # Fwd pass, get model activations
+        t0 = time.time()
         residual, model_acts = model.forward(minibatch, return_logits=False)
+        time_logs["(2) Forward passes to gather model activations"] += time.time() - t0
+        
+        # Compute feature activations from this
+        t0 = time.time()
         feat_acts = compute_feat_acts(model_acts, feature_indices, encoder, encoder_B, corrcoef_neurons, corrcoef_encoder_B)
+        time_logs["(3) Computing feature acts from model acts"] += time.time() - t0
+
+        # Add these to the lists (we'll eventually concat)
         all_feat_acts.append(feat_acts)
         all_resid_post.append(residual)
-        progress[0].update(1)
-        # progress.advance(progress.task_ids[0])
+
+        # Update the 1st progress bar (fwd passes & getting sequence data dominates the runtime of these computations)
+        if progress is not None:
+            progress[0].update(1)
 
     all_feat_acts = torch.cat(all_feat_acts, dim=0)
     all_resid_post = torch.cat(all_resid_post, dim=0)
 
-    t2 = time.time()
-
     # ! Use the data we've collected to make a MultiFeatureData object
-    multi_feature_data, time_logs = parse_feature_data(
+    multi_feature_data, _time_logs = parse_feature_data(
         tokens = tokens,
         feature_indices = feature_indices,
         all_feat_acts = all_feat_acts,
@@ -457,8 +476,10 @@ def _get_feature_data(
         progress = progress,
     )
 
-    time_logs["Forward passes to gather data"] = t2 - t1
-    time_logs["Initialization"] = t1 - t0
+    assert set(time_logs.keys()) & set(_time_logs.keys()) == set(),\
+        f"Invalid keys: {set(time_logs.keys()) & set(_time_logs.keys())} should have zero overlap"
+
+    time_logs.update(_time_logs)
 
     return multi_feature_data, time_logs
 
@@ -475,8 +496,8 @@ def get_feature_data(
 ) -> SaeVisData:
     '''
     This is the main function which users will run to generate the feature visualization data. It batches this
-    computation over features, in accordance with the arguments in the SaeVisConfig object (we don't want to
-    compute all the features at once, since might be too memory-intensive).
+    computation over features, in accordance with the arguments in the SaeVisConfig object (we don't want to compute all
+    the features at once, since might give OOMs).
 
     See the `_get_feature_data` function for an explanation of the arguments, as well as a more detailed explanation
     of what this function is doing.
@@ -513,11 +534,14 @@ def get_feature_data(
     # Get the denominator for each of the 2 progress bars
     totals = (n_token_batches*len(feature_batches), len(features_list))
 
-    # Add two progress bars (one for the forward passes, one for getting the sequence data)
-    progress = [
-        tqdm(total=totals[0], desc="Forward passes to cache data for vis"),
-        tqdm(total=totals[1], desc="Extracting vis data from cached data"),
-    ]
+    # Optionally add two progress bars (one for the forward passes, one for getting the sequence data)
+    if cfg.verbose:
+        progress = [
+            tqdm(total=totals[0], desc="Forward passes to cache data for vis"),
+            tqdm(total=totals[1], desc="Extracting vis data from cached data"),
+        ]
+    else:
+        progress = None
 
     # If the model is from TransformerLens, we need to apply a wrapper to it for standardization
     assert isinstance(model, HookedTransformer), "Error: non-HookedTransformer models are not yet supported."
@@ -534,9 +558,8 @@ def get_feature_data(
             time_logs[key] += value
 
     # Now exited, make sure the progress bar is at 100%
-    for pbar in progress: pbar.n = pbar.total
-    # progress.update(progress.task_ids[0], completed=n_token_batches*len(feature_batches))
-    # progress.update(progress.task_ids[1], completed=len(features_list))
+    if progress is not None:
+        for pbar in progress: pbar.n = pbar.total
 
     # If verbose, then print the output
     if cfg.verbose:
@@ -665,18 +688,18 @@ def get_sequences_data(
     orig_logits = (resid_post_pre_ablation / resid_post_pre_ablation.std(dim=-1, keepdim=True)) @ W_U
     contribution_to_logprobs = orig_logits.log_softmax(dim=-1) - new_logits.log_softmax(dim=-1)
 
-    # ! (3A) Use this to compute the most affected tokens by this feature
+    # ! (4A) Use this to compute the most affected tokens by this feature
     # The TopK function can improve efficiency by masking the features which are zero
     acts_nonzero = feat_acts_pre_ablation.abs() > 1e-5 # shape [batch buf]
     top_contribution_to_logits = TopK(contribution_to_logprobs, k=seq_cfg.top_logits_hoverdata, largest=True, tensor_mask=acts_nonzero)
     bottom_contribution_to_logits = TopK(contribution_to_logprobs, k=seq_cfg.top_logits_hoverdata, largest=False, tensor_mask=acts_nonzero)
 
-    # ! (3B) Use this to compute the loss effect if this feature is ablated
+    # ! (4B) Use this to compute the loss effect if this feature is ablated
     # which is just the negative of the change in logprobs
     loss_contribution = eindex(-contribution_to_logprobs, correct_tokens, "batch seq [batch seq]")
 
 
-    # ! (4) Store the results in a SequenceMultiGroupData object
+    # ! (5) Store the results in a SequenceMultiGroupData object
 
     # Now that we've indexed everything, construct the batch of SequenceData objects
     sequence_groups_data = []
@@ -711,12 +734,14 @@ def parse_prompt_data(
     W_U: Float[Tensor, "d_model d_vocab"],
     feature_idx: Optional[list[int]] = None,
     num_top_features: int = 10,
-) -> Dict[str, Tuple[List[int], List[str]]]:
-    """Gets data needed to create the sequences in the prompt-centric HTML visualisation.
-       
-       This visualization displays dashboards for the most relevant features on a prompt.
-       This function exists so that prompt dashboards can be generated without using our AutoEncoder or TransformerLensWrapper classes. 
-       
+) -> dict[str, tuple[list[int], list[str]]]:
+    """
+    Gets data needed to create the sequences in the prompt-centric vis (displaying dashboards for the most relevant
+    features on a prompt).
+    
+    This function exists so that prompt dashboards can be generated without using our AutoEncoder or
+    TransformerLens(Wrapper) classes. 
+    
     Args:
         tokens: Int[Tensor, "batch seq"]
             The tokens we'll be using to get the feature activations. Note that we might not be using all of them; the
@@ -741,20 +766,23 @@ def parse_prompt_data(
         W_U: Float[Tensor, "d_model d_vocab"]
             The model's unembed weights for the logit lens.
 
-        feature_idx: List[int] or None
+        feature_idx: list[int] or None
             The features we're actually computing. These might just be a subset of the model's full features.
             
         num_top_features: int
             The number of top features to display in this view, for any given metric.
 
     Returns:
-        scores_dict:      A dictionary mapping keys like "act_quantile|0" to a tuple of lists, where the first list is
-                          the feature indices, and the second list is the string-formatted values of the scores.
+        scores_dict: dict[str, tuple[list[int], list[str]]]
+            A dictionary mapping keys like "act_quantile|'django' (0)" to a tuple of lists, where the first list is the
+            feature indices, and the second list is the string-formatted values of the scores.
 
     As well as returning this dictionary, this function will also set `FeatureData.prompt_data` for each feature in
-    `sae_vis_data`. This is because the prompt-centric vis will call `FeatureData._get_html_data_prompt_centric` on each
-    feature data object, so it's useful to have all the data in once place! Even if this will get overwritten next
-    time we call `get_prompt_data` for this same `sae_vis_data` object.
+    `sae_vis_data` (this is necessary for getting the prompts in the prompt-centric vis). Note this design choice could
+    have been done differently (i.e. have this function return a list of the prompt data for each feature). I chose this
+    way because it means the FeatureData._get_html_data_prompt_centric can work fundamentally the same way as 
+    FeatureData._get_html_data_feature_centric, rather than treating the prompt data object as a different kind of
+    component in the vis.
     """
     if feature_idx is None: 
         feature_idx = list(sae_vis_data.feature_data_dict.keys())
@@ -804,7 +832,7 @@ def parse_prompt_data(
     # ! Lastly, return a dictionary mapping each key like 'act_quantile|"django" (0)' to a list of feature indices & scores
 
     # Get a dict with keys like f"act_quantile|'My' (1)" and values (feature indices list, feature score values list)
-    scores_dict: Dict[str, Tuple[List[int], List[str]]] = {}
+    scores_dict: dict[str, tuple[list[int], list[str]]] = {}
 
     for seq_pos, seq_key in enumerate([f"{t!r} ({i})" for i, t in enumerate(str_toks)]):
 
@@ -862,7 +890,7 @@ def get_prompt_data(
     sae_vis_data: SaeVisData,
     prompt: str,
     num_top_features: int,
-) -> Dict[str, Tuple[List[int], List[str]]]:
+) -> dict[str, tuple[list[int], list[str]]]:
     '''
     Gets data that will be used to create the sequences in the prompt-centric HTML visualisation, i.e. an object of
     type SequenceData for each of our features.
@@ -889,7 +917,7 @@ def get_prompt_data(
     model = sae_vis_data.model; assert isinstance(model, HookedTransformer)
     cfg = sae_vis_data.cfg; assert isinstance(cfg.hook_point, str), f"{cfg.hook_point=}, expected a string"
 
-    str_toks: List[str] = model.tokenizer.tokenize(prompt) # type: ignore
+    str_toks: list[str] = model.tokenizer.tokenize(prompt) # type: ignore
     tokens = model.tokenizer.encode(prompt, return_tensors="pt").to(device) # type: ignore
     assert isinstance(tokens, torch.Tensor)
 

@@ -211,7 +211,7 @@ class FeatureTablesData:
             correlated_features_cossim = self.correlated_features_cossim[:cfg.n_rows]
 
             assert (correlated_features_pearson is not None) and (correlated_features_cossim is not None), "All or none"
-            data["correlatedFeaturesBEncoder"] = [
+            data["correlatedFeaturesB"] = [
                 {"index": I, "value": f"{P:+.3f}", "percentageL1": f"{C:+.3f}"}
                 for I, P, C in zip(correlated_features_indices, correlated_features_pearson, correlated_features_cossim)
             ]
