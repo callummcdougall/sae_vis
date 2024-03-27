@@ -1,5 +1,7 @@
 This codebase was designed to replicate Anthropic's sparse autoencoder visualisations, which you can see [here](https://transformer-circuits.pub/2023/monosemantic-features/vis/a1.html). The codebase provides 2 different views: a **feature-centric view** (which is like the one in the link, i.e. we look at one particular feature and see things like which tokens fire strongest on that feature) and a **prompt-centric view** (where we look at once particular prompt and see which features fire strongest on that prompt according to a variety of different metrics).
 
+Install with `pip install sae-vis`.
+
 **Important note** - this repo has recently been significantly restructured. The recent changes include:
 
 - The ability to view multiple features on the same page (rather than just one feature at a time)
