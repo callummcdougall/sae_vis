@@ -181,7 +181,6 @@ def get_decode_html_safe_fn(tokenizer, html: bool = False) -> Callable[[int | li
 # assert get_decode_html_safe_fn(model.tokenizer, html=True)(unsafe_token_id) == "&lt;"
 
 
-
 HTML_CHARS = {
     "\\": "&bsol;",
     "<": "&lt;",
@@ -197,6 +196,7 @@ HTML_ANOMALIES = {
     "âĢĭ": "&#8203;",
     "Ġ": "&nbsp;",
     "Ċ": "&bsol;n",
+    "ĉ": "&bsol;t",
 }
 HTML_QUOTES = {
     "'": "&apos;",

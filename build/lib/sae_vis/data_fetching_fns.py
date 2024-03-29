@@ -192,7 +192,7 @@ def parse_feature_data(
             update the progress bars as the computation runs.
     
     Returns:
-        multi_feature_data: SaeVisData
+        sae_vis_data: SaeVisData
             Containing data for creating each feature visualization, as well as data for rank-ordering the feature
             visualizations when it comes time to make the prompt-centric view (the `feature_act_quantiles` attribute).
 
@@ -346,8 +346,8 @@ def parse_feature_data(
 
 
     # ! Return the output, as a dict of FeatureData items
-    multi_feature_data = SaeVisData(feature_data_dict, feature_act_quantiles, cfg)
-    return multi_feature_data, time_logs
+    sae_vis_data = SaeVisData(feature_data_dict, feature_act_quantiles, cfg)
+    return sae_vis_data, time_logs
 
 
 
@@ -395,7 +395,7 @@ def _get_feature_data(
             update the progress bars as the computation runs.
 
     Returns:
-        multi_feature_data: SaeVisData
+        sae_vis_data: SaeVisData
             Containing data for creating each feature visualization, as well as data for rank-ordering the feature
             visualizations when it comes time to make the prompt-centric view (the `feature_act_quantiles` attribute).
 
@@ -462,7 +462,7 @@ def _get_feature_data(
     all_resid_post = torch.cat(all_resid_post, dim=0)
 
     # ! Use the data we've collected to make a MultiFeatureData object
-    multi_feature_data, _time_logs = parse_feature_data(
+    sae_vis_data, _time_logs = parse_feature_data(
         tokens = tokens,
         feature_indices = feature_indices,
         all_feat_acts = all_feat_acts,
@@ -481,7 +481,7 @@ def _get_feature_data(
 
     time_logs.update(_time_logs)
 
-    return multi_feature_data, time_logs
+    return sae_vis_data, time_logs
 
 
 
@@ -510,7 +510,7 @@ def get_feature_data(
         np.random.seed(cfg.seed)
 
     # Create objects to store all the data we'll get from `_get_feature_data`
-    multi_feature_data = SaeVisData()
+    sae_vis_data = SaeVisData()
     time_logs = defaultdict(float)
 
     # Slice tokens, if we're only doing a subset of them
@@ -553,7 +553,7 @@ def get_feature_data(
         new_feature_data, new_time_logs = _get_feature_data(
             encoder, encoder_B, model_wrapper, tokens, features, cfg, progress
         )
-        multi_feature_data.update(new_feature_data)
+        sae_vis_data.update(new_feature_data)
         for key, value in new_time_logs.items():
             time_logs[key] += value
 
@@ -569,7 +569,7 @@ def get_feature_data(
             table.add_row(task, f"{duration:.2f}s", f"{duration/total_time:.1%}")
         rprint(table)
 
-    return multi_feature_data
+    return sae_vis_data
 
 
 
