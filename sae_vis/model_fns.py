@@ -218,8 +218,8 @@ def to_resid_dir(dir: Float[Tensor, "feats d_in"], model: TransformerLensWrapper
         model:
             The model, which should be a HookedTransformerWrapper or similar.
     """
-    # If this SAE was trained on the residual stream, then we don't need to do anything
-    if "resid" in model.hook_point:
+    # If this SAE was trained on the residual stream or attn/mlp out, then we don't need to do anything
+    if "resid" in model.hook_point or "_out" in model.hook_point:
         return dir
     
     # If it was trained on the MLP layer, then we apply the W_out map
