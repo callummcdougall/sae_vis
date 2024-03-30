@@ -13,62 +13,6 @@ from sae_vis.data_config_classes import (
     Column,
 )
 
-'''
-This file contains all functions which do HTML-specific things. Mostly, this is the `HTML` class, which is the return
-type for the `_get_html_data` methods in the classes in `data_storing_fns.py`. This class contains the HTML string as
-well as JavaScript data in the form of dictionaries. 
-
-Why was the choice made to separate these, rather than just concatenating HTML strings? Because it's useful to keep the
-JavaScript data stored as data, so we can do things like merge it or save it all to a single file / dump it into our
-HTML file as a single variable.
-
-The rough structure of the HTML file returned by `HTML.get_html` is as follows:
-
-```html
-<div id='dropdown-container'></div> # for containing our dropdowns, to navigate between different views
-        
-<div class='grid-container'>
-    <div id='column-0' class="grid-column">
-        ... # HTML string for column 0 (i.e. containing a bunch of components, with IDs distinguishable by suffix)
-    </div>
-    ... # more columns
-</div>
-
-<style>
-... # CSS
-</style>
-
-<script src="https://d3js.org/d3.v6.min.js"></script>
-<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-
-<script>
-document.addEventListener("DOMContentLoaded", function(event) {{
-    const ALL_DATA = defineData();      # load in our data
-    createDropdowns(ALL_DATA);          # create dropdowns from the data, and also create the vis for the first time
-}});
-
-function createDropdowns(ALL_DATA) {{
-    // Dynamically creates dropdowns from the data (by parsing its keys), and causes `createVis` to be called whenever
-    // the dropdowns change. This includes the initial call to `createVis` with the first key, which is START_KEY.
-}}
-
-function createVis(DATA) {{
-    // Create the vis from the data (this is where all the JavaScript files in this repo get dumped into). The DATA
-    // object here will be ALL_DATA[key] for some key (the key will be a feature index in the feature-centric vis, and
-    // it'll be something like "act_quantile|'first' (6)" in the prompt-centric vis).
-}}
-
-function defineData() {{
-    // Load in ALL_DATA, which is a nested dictionary: keys are "|"-separated options for the dropdowns, and values are
-    // dictionaries {"tokenData": ..., "featureTablesData: ...}. See the correspondingly named JavaScript files to
-    // understand how this data is used (within the `createVis` function).
-}}
-</script>
-```
-'''
-
-
-
 
 BG_COLOR_MAP = colors.LinearSegmentedColormap.from_list("bg_color_map", ["white", "darkorange"])
 
@@ -226,15 +170,26 @@ document.addEventListener("DOMContentLoaded", function(event) {{
 }});
 
 function createDropdowns(DATA) {{
+    // Dynamically creates dropdowns from the data (by parsing its keys), and causes `createVis` to be called whenever
+    // the dropdowns change. This includes the initial call to `createVis` with the first key, which is START_KEY.
+
     const START_KEY = {json.dumps(first_key)};
     {apply_indent(js_create_dropdowns, "    ")}
 }}
 
 function createVis(DATA) {{
+    // Create the vis from the data (this is where all the JavaScript files in this repo get dumped into). The DATA
+    // object here will be ALL_DATA[key] for some key (the key will be a feature index in the feature-centric vis, and
+    // it'll be something like "act_quantile|'first' (6)" in the prompt-centric vis).
+
     {apply_indent(js_create_vis, "    ")}
 }}
 
 function defineData() {{
+    // Load in ALL_DATA, which is a nested dictionary: keys are "|"-separated options for the dropdowns, and values are
+    // dictionaries {{"tokenData": ..., "featureTablesData: ...}}. See the correspondingly named JavaScript files to
+    // understand how this data is used (within the `createVis` function).
+
     const ALL_DATA = {json.dumps(self.js_data)};
     return ALL_DATA;
 }}

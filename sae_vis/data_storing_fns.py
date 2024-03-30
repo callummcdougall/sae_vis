@@ -8,6 +8,7 @@ from dataclasses_json import dataclass_json
 from jaxtyping import Int
 import re
 from copy import deepcopy
+import json
 
 from transformer_lens import HookedTransformer
 
@@ -17,7 +18,6 @@ from sae_vis.utils_fns import (
     to_str_tokens,
     QuantileCalculator,
     HistogramData,
-    SaveableDataclass,
     get_decode_html_safe_fn,
     unprocess_str_tok,
     max_or_1,
@@ -28,6 +28,7 @@ from sae_vis.html_fns import (
     HTML,
 )
 from sae_vis.data_config_classes import (
+    SaeVisLayoutConfig,
     SaeVisConfig,
     FeatureTablesConfig,
     ActsHistogramConfig,
@@ -35,7 +36,7 @@ from sae_vis.data_config_classes import (
     LogitsHistogramConfig,
     SequencesConfig,
     PromptConfig,
-    GenericConfig,
+    GenericComponentConfig,
 )
 
 METRIC_TITLES = {
@@ -44,93 +45,6 @@ METRIC_TITLES = {
     "loss_effect": "Loss Effect",
 }
 PRECISION = 4
-
-'''
-This file contains all the dataclasses which store data used to create the visualizations. 
-
-There are 2 special classes (SaeVisData, FeatureData), and 8 other component dataclasses.
-
-TLDR:
-
-    - SaeVisData is the class that users interact with
-        - It contains a bunch of FeatureData objects (one for each feature) which it uses when creating both the
-            feature-centric and prompt-centric visualizations.
-    - The other 8 component dataclasses store data for a given component, e.g. logits table / hist or sequence group.
-    - FeatureData is the middleman:
-        - It stores a bunch of components, enough to make the feature-centric vis for a single feature, or a single
-            column of the prompt-centric vis for a particular feature
-        - The SaeVisData object has methods to create the feature-centric and prompt-centric vis, and these will call
-            methods of all its FeatureData objects & merge the results
-
-WAY MORE DETAIL THAN YOU EVER THOUGHT YOU NEEDED:
-
-SaeVisData
-
-    This is the most important class (it's the one that users interact with). The 3 user-exposed methods are:
-    - `create` (classmethod) which is how we gather the data in the first place
-    - `save_html_feature_centric` which is how we get the HTML for the feature-centric view
-    - `save_html_prompt_centric` which is how we get the HTML for the prompt-centric view
-
-FeatureData
-
-    This is maybe the most complicated class to understand, since it's basically a middle-ground between SaeVisData and
-    the 8 component dataclasses. To explain this middle-ground role:
-
-        - It contains a bunch of component dataclasses (e.g. FeatureTablesData, ActsHistogramData, etc). This is all the
-          data necessary to make the feature-centric vis, for a single feature (or to make a single column of the
-          prompt-centric vis, for a particular feature).
-        - SaeVisData contains a bunch of FeatureData objects (one for each feature)
-
-    In feature-centric vis:
-        `SaeVisData.save_html_feature_centric` will call `FeatureData._get_html_data_feature_centric` for each of its
-        features (i.e. returning a bunch of full-page objects), then merge the results into a single HTML object which
-        becomes the feature-centric vis.
-
-    In prompt-centric vis:
-        Calling `SaeVisData.save_html_prompt_centric` will call `FeatureData._get_html_data_prompt_centric` for every
-        choice of tuple (metric function, token in user's prompt) and every one of the top-scoring features for that
-        tuple (i.e. returning a bunch of column objects), then merge across features into a full-page object, then merge
-        these full-page objects into a single HTML object which becomes the prompt-centric vis.
-
-8 component dataclasses
-
-The 8 component dataclasses correspond to particular components in the vis (e.g. logits table, feature activations
-histogram, or sequence groups), which might appear more than once in any given vis. Each of these classes has a method
-called `_get_html_data`, which returns an HTML object (we'll union over all these HTML objects for any given vis). The
-5 arguments for each `_get_html_data` method are always the same:
-    
-    - `cfg`, which is the config object for the visualization. Every different type of component has its own config, see
-        `data_config_classes.py` for more. Example: the `FeatureTablesConfig` object determines how many rows to include
-        in the tables.
-    
-    - `decode_fn`, which is a function that takes a token ID and returns a string token. This is created from the model
-        vocabulary, but we use this as an argument so we don't have to create it more than once.
-    
-    - `id_suffix`, which is a string that is appended to the end of the ID of the HTML object. This is used to make sure
-        that components have a unique ID, and it also helps us match up token hoverlines with the right histogram.
-    
-    - `column`, which is the index of the column in the visualization. This is also used to give components a unique ID.
-
-    - `component_specific_kwargs`, which is a dictionary of any other arguments that are specific to the component. This
-        is currently only used for the prompt data in the prompt-centric view, because we need to specify which token is
-        bolded (and that it has a permanent line). It's good to be able to pass all these arguments into a single dict,
-        since this way I can still keep the same type signature (these 5 inputs) for all components. Also, I can do
-        things like pass `bold_idx` into this dictionary without checking which components it's for, since it'll just
-        be ignored if it's not needed for the component in question.
-
-A full list of these 8 classes (and what data they contain):
-
-    FeatureTablesData:      Basic data about features, e.g. correlated neurons (left-hand tables in default view)
-    ActsHistogramData:      Data for the feature activations histogram (middle top histogram in default view)
-    LogitsTableData:        Data for the logits table (middle table in default view)
-    LogitsHistogramData:    Data for the logits histogram (middle bottom histogram in default view)
-    SequenceData:           Data for a single sequence of tokens (right-hand side of default view)
-    SequenceGroupData:      Data for a group of sequences (e.g. a quantile in prompt-centric view)
-    SequenceMultiGroupData: Data for multiple groups of sequences (e.g. all quantiles in prompt-centric view)
-'''
-
-
-
 
 @dataclass_json
 @dataclass
@@ -753,9 +667,8 @@ GenericData = Union[
 ]
 
 
-@dataclass_json
 @dataclass
-class FeatureData(SaveableDataclass):
+class FeatureData:
     '''
     This contains all the data necessary to make the feature-centric visualization, for a single feature. See
     diagram in readme: 
@@ -774,9 +687,6 @@ class FeatureData(SaveableDataclass):
     of these objects creates the HTML for a single feature (i.e. a full screen). In the prompt-centric view, a single
     one of these objects will create one column of the full screen vis.
     '''
-    feature_idx: int
-    cfg: SaeVisConfig
-
     feature_tables_data: FeatureTablesData = field(default_factory = lambda: FeatureTablesData())
     acts_histogram_data: ActsHistogramData = field(default_factory = lambda: ActsHistogramData())
     logits_table_data: LogitsTableData = field(default_factory = lambda: LogitsTableData())
@@ -784,7 +694,7 @@ class FeatureData(SaveableDataclass):
     sequence_data: SequenceMultiGroupData = field(default_factory = lambda: SequenceMultiGroupData())
     prompt_data: SequenceData = field(default_factory = lambda: SequenceData())
 
-    def get_component_from_config(self, config: GenericConfig) -> GenericData:
+    def get_component_from_config(self, config: GenericComponentConfig) -> GenericData:
         '''
         Given a config object, returns the corresponding data object stored by this instance. For instance, if the input
         is an `FeatureTablesConfig` instance, then this function returns `self.feature_tables_data`.
@@ -803,6 +713,7 @@ class FeatureData(SaveableDataclass):
     
     def _get_html_data_feature_centric(
         self,
+        layout_cfg: SaeVisLayoutConfig,
         decode_fn: Callable,
     ) -> HTML:
         '''
@@ -824,9 +735,12 @@ class FeatureData(SaveableDataclass):
         html_obj = HTML()
 
         # For every column in this feature-centric layout, we add all the components in that column
-        for column_idx, column_components in self.cfg.feature_centric_layout.columns.items():
+        for column_idx, column_components in layout_cfg.columns.items():
+
             for component_config in column_components:
+
                 component = self.get_component_from_config(component_config)
+                
                 html_obj += component._get_html_data(
                     cfg = component_config,
                     decode_fn = decode_fn,
@@ -838,6 +752,7 @@ class FeatureData(SaveableDataclass):
 
     def _get_html_data_prompt_centric(
         self,
+        layout_cfg: SaeVisLayoutConfig,
         decode_fn: Callable,
         column_idx: int,
         bold_idx: int,
@@ -865,18 +780,19 @@ class FeatureData(SaveableDataclass):
         html_obj = HTML()
 
         # Verify that we only have a single column
-        layout = self.cfg.prompt_centric_layout
-        assert layout.columns.keys() == {0},\
-            f"cfg.prompt_centric_layout should only have 1 column, instead found cols {layout.columns.keys()}"
-        assert layout.prompt_cfg is not None,\
-            "cfg.prompt_centric_layout should include a PromptConfig, but found None"
-        if layout.seq_cfg is not None:
-            assert (layout.seq_cfg.n_quantiles == 0) or (layout.seq_cfg.stack_mode == "stack-all"),\
-            "cfg.prompt_centric_layout should have stack_mode='stack-all' if n_quantiles > 0, so that it fits in 1 col"
+        assert layout_cfg.columns.keys() == {0},\
+            f"prompt_centric_layout should only have 1 column, instead found cols {layout_cfg.columns.keys()}"
+        assert layout_cfg.prompt_cfg is not None,\
+            "prompt_centric_cfg should include a PromptConfig, but found None"
+        if layout_cfg.seq_cfg is not None:
+            assert (layout_cfg.seq_cfg.n_quantiles == 0) or (layout_cfg.seq_cfg.stack_mode == "stack-all"),\
+            "prompt_centric_layout should have stack_mode='stack-all' if n_quantiles > 0, so that it fits in 1 col"
 
-        # Iterate over all the components in this single column, and add them all to the HTML object
-        for component_config in layout.columns[0]:
+        # For every component in the single column of this prompt-centric layout, add all the components in that column
+        for component_config in layout_cfg.columns[0]:
+
             component = self.get_component_from_config(component_config)
+
             html_obj += component._get_html_data(
                 cfg = component_config,
                 decode_fn = decode_fn,
@@ -896,27 +812,47 @@ class FeatureData(SaveableDataclass):
         return html_obj
 
 
-
-
 @dataclass_json
 @dataclass
-class SaeVisData(SaveableDataclass):
+class _SaeVisData:
+    '''
+    Dataclass which is used to store the data for the SaeVisData class. It excludes everything which isn't easily
+    serializable, only saving the raw data.
+    '''
+    feature_data_dict: dict[int, FeatureData] = field(default_factory=dict)
+    feature_act_quantiles: QuantileCalculator = field(default_factory=QuantileCalculator)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> '_SaeVisData':
+        ... # just for type hinting; the method comes from 'dataclass_json'
+
+    def to_dict(self) -> dict:
+        ... # just for type hinting; the method comes from 'dataclass_json'
+
+
+
+
+@dataclass
+class SaeVisData:
     '''
     This contains all the data necessary for constructing the feature-centric visualization, over multiple 
     features (i.e. being able to navigate through them). See diagram in readme:
 
         https://github.com/callummcdougall/sae_vis#data_storing_fnspy
-     
-    feature_data_dict:      Contains the data for each individual feature-centric vis.
-    feature_act_quantiles:  Contains the quantiles of activation values for each feature (used for rank-ordering feats
-                            in the prompt-centric vis).
-    cfg:                    The vis config, used for the both the data gathering and the vis layout.
+
+    Args: 
+        feature_data_dict:      Contains the data for each individual feature-centric vis.
+        feature_act_quantiles:  Contains the quantiles of activation values for each feature (used for rank-ordering
+                                features in the prompt-centric vis).
+        cfg:                    The vis config, used for the both the data gathering and the vis layout.
+        model:                  The model which our encoder was trained on.
+        encoder:                The encoder used to get the feature activations.
+        encoder_B:              The encoder used to get the feature activations for the second model (if applicable).
     '''
     feature_data_dict: dict[int, FeatureData] = field(default_factory=dict)
     feature_act_quantiles: QuantileCalculator = field(default_factory=QuantileCalculator)
     cfg: SaeVisConfig = field(default_factory=SaeVisConfig)
 
-    # Some more attributes which we won't save to disk when we save this class
     model: Optional[HookedTransformer] = None
     encoder: Optional[AutoEncoder] = None
     encoder_B: Optional[AutoEncoder] = None
@@ -930,6 +866,7 @@ class SaeVisData(SaveableDataclass):
         if other is None: return
         self.feature_data_dict.update(other.feature_data_dict)
         self.feature_act_quantiles.update(other.feature_act_quantiles)
+
 
     @classmethod
     def create(
@@ -956,6 +893,7 @@ class SaeVisData(SaveableDataclass):
         sae_vis_data.encoder_B = encoder_B
 
         return sae_vis_data
+
 
     def save_feature_centric_vis(
        self,
@@ -984,7 +922,7 @@ class SaeVisData(SaveableDataclass):
         for feature, feature_data in self.feature_data_dict.items():
 
             # Get the HTML object for a single-feature view
-            html_obj = feature_data._get_html_data_feature_centric(decode_fn)
+            html_obj = feature_data._get_html_data_feature_centric(self.cfg.feature_centric_layout, decode_fn)
 
             # Add the JavaScript, and arbitrarily set html_str to be the first feature's html_str (they're all same!)
             HTML_OBJ.js_data[str(feature)] = deepcopy(html_obj.js_data)
@@ -996,6 +934,7 @@ class SaeVisData(SaveableDataclass):
             filename = filename,
             first_key = str(first_feature),
         )
+
 
     def save_prompt_centric_vis(
         self,
@@ -1059,6 +998,7 @@ class SaeVisData(SaveableDataclass):
                 
                 # Get HTML object at this column (which includes JavaScript to dynamically set the title)
                 html_obj += self.feature_data_dict[feature_idx]._get_html_data_prompt_centric(
+                    layout_cfg = self.cfg.prompt_centric_layout,
                     decode_fn = decode_fn,
                     column_idx = i,
                     bold_idx = _seq_pos,
@@ -1084,3 +1024,49 @@ computing your initial data with more features and/or tokens, to make sure you h
         )
 
 
+    def save_json(self: "SaeVisData", filename: str | Path) -> None:
+        '''
+        Saves an SaeVisData instance to a JSON file. The config, model & encoder arguments must be user-supplied.
+        '''
+        if isinstance(filename, str): filename = Path(filename)
+        assert filename.suffix == ".json", "Filename must have a .json extension"
+
+        _self = _SaeVisData(
+            feature_data_dict = self.feature_data_dict,
+            feature_act_quantiles = self.feature_act_quantiles,
+        )
+
+        with open(filename, "w") as f:
+            json.dump(_self.to_dict(), f)
+
+
+    @classmethod
+    def load_json(
+        cls,
+        filename: str | Path,
+        cfg: SaeVisConfig,
+        model: HookedTransformer,
+        encoder: AutoEncoder,
+        encoder_B: AutoEncoder,
+    ) -> "SaeVisData":
+        '''
+        Loads an SaeVisData instance from JSON file. The config, model & encoder arguments must be user-supplied.
+        '''
+        if isinstance(filename, str): filename = Path(filename)
+        assert filename.suffix == ".json", "Filename must have a .json extension"
+
+        with open(filename, "r") as f:
+            data = json.load(f)
+
+        _self = _SaeVisData.from_dict(data)
+
+        self = SaeVisData(
+            feature_data_dict = _self.feature_data_dict,
+            feature_act_quantiles = _self.feature_act_quantiles,
+            cfg = cfg,
+            model = model,
+            encoder = encoder,
+            encoder_B = encoder_B,
+        )
+
+        return self

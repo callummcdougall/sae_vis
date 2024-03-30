@@ -44,32 +44,9 @@ from sae_vis.data_config_classes import (
     SaeVisLayoutConfig,
     SaeVisConfig,
     SequencesConfig,
-    DEFAULT_LAYOUT_FEATURE_VIS,
 )
 
 device = get_device()
-
-'''
-The functions here actually gather the data which will be used in the feature-centric and prompt-centric visualisations.
-It's all pretty straightforward in the sense that we don't have a lot of different abstractions and classes here,
-although some of the data gathering (in particular the sequence indexing) can get pretty fiddly!
-
-The 2 most important functions are:
-
-    - get_feature_data:
-        This is the main function which is used to generate the data for the feature-centric vis.
-        It's called when users run the SaeVisData.create(...) method.
-        There's also  _get_feature_data which is where most of the logic actually happens; get_feature_data just breaks
-        up the tokens into minibatches & runs _get_feature_data on each minibatch.
-
-    - get_prompt_data:
-        This is the main function which is used to generate the data for the prompt-centric vis.
-        The only data it actually computes is:
-            - The SequenceData for the user's prompt, for each feature
-            - A dictionary of all the top-scoring features for every choice of metric & token
-        This is because it gets most of its data from the SaeVisData object which the user already created, and which 
-        this function takes as an argument.
-'''
 
 
 def compute_feat_acts(
@@ -219,7 +196,7 @@ def parse_feature_data(
             f"Num features in feature_out_dir ({feature_resid_dir.shape[0]}) doesn't match {len(feature_indices)=}"
 
     # ! Data setup code (defining the main objects we'll eventually return)
-    feature_data_dict: dict[int, FeatureData] = {feat: FeatureData(feat, cfg) for feat in feature_indices}
+    feature_data_dict: dict[int, FeatureData] = {feat: FeatureData() for feat in feature_indices}
 
     # We're using `cfg.feature_centric_layout` to figure out what data we'll need to calculate during this function
     layout = cfg.feature_centric_layout

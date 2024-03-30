@@ -443,7 +443,6 @@ class QuantileCalculator:
     quantile_data: List[List[float]] = field(default_factory=list)
     ranges_and_precisions: list = field(default_factory=lambda: ASYMMETRIC_RANGES_AND_PRECISIONS)
 
-
     @classmethod
     def from_data(
         cls,
@@ -815,65 +814,9 @@ class BatchedCorrCoef:
         return pearson_topk.indices.tolist(), pearson_topk.values.tolist(), cossim_values.tolist()
 
 
-
 @dataclass_json
 @dataclass
-class SaveableDataclass:
-    '''
-    This is a base class for all the dataclasses in this file. It's used to ensure that we can save and load all the
-    dataclasses in this file to and from JSON.
-    '''
-    def to_dict(self) -> dict:
-        return self.to_dict()
-
-
-    def save_json(self, filename: str, verbose: bool = False)  -> None:
-        '''
-        Saves the object to a JSON file (and optionally returns dict).
-
-        Args:
-            filename: if None then we don't save, if string then we save here
-            verbose: if True, then we print out time taken for saving
-        '''
-        t0 = time.time()
-
-        # Save object, converted to a dictionary
-        assert filename.endswith(".json"), "Expected filename to end with '.json'"
-        json.dump(self.to_dict(), open(filename, "w"))
-        
-        # Print time taken to save
-        if verbose:
-            print(f"Saved to JSON in {time.time() - t0:.2f} seconds")
-        
-
-    @classmethod
-    def load_json(cls, filename: str, verbose: bool = False) -> "SaveableDataclass":
-        '''
-        Loads the dataclass object from a saved filename (or directly from a dict).
-
-        Args:
-            filename: filename we're loading data from
-        '''
-        t0 = time.time()
-
-        # Load in the data (as a dictionary)
-        assert filename.endswith(".json"), "Expected filename to end with '.json'"
-        data_dict = json.load(open(filename, "r"))
-
-        # Get dataclass object from dictionary
-        instance = cls.from_dict(data_dict) # type: ignore
-
-        # Print time taken to load
-        if verbose:
-            print(f"Loaded in {time.time() - t0:.2f} seconds")
-        
-        return instance
-
-
-
-@dataclass_json
-@dataclass
-class HistogramData(SaveableDataclass):
+class HistogramData:
     '''
     This class contains all the data necessary to construct a single histogram (e.g. the logits or feat acts histogram).
     See diagram in readme:

@@ -1,29 +1,9 @@
-from dataclasses import dataclass, asdict
-from dataclasses_json import dataclass_json
-from typing import Optional, Iterable, Union, Literal
+from dataclasses import dataclass, asdict, field
+from dataclasses_json import dataclass_json, config
+from typing import Optional, Iterable, Union, Literal, Iterator, Any
 from rich import print as rprint
 from rich.tree import Tree
 from rich.table import Table
-
-'''
-This file contains dataclasses which are used to configure the SAE visualisation.
-
-The main class is `SaeVisConfig`, which contains all the parameters for the visualisation. There are 2 kinds of params
-that are stored here:
-
-    - Data params, e.g. batch size and minibatch size
-    - Layout params
-
-There are 2 layout params: both of class `SaeVisLayoutConfig`, one for the feature-centric vis and one for the
-prompt-centric vis. The former is used when generating data for the first time in `SaeVisData.create(...)`, and each
-are used when calling the methods `SaeVisData.save_feature_centric_vis` and `SaeVisData.save_prompt_centric_vis`
-respectively.
-
-You can look at the objects DEFAULT_LAYOUT_FEATURE_VIS, DEFAULT_LAYOUT_PROMPT_VIS to see what layout objects lead to
-the default appearance of the feature-centric and prompt-centric views. Also, these layout objects have a `help` method
-which prints out a tree showing what your vis layout will look like, and what each argument does (that's the purpose of
-the _HELP dictionaries defined immediately below this text).
-'''
 
 
 SEQUENCES_CONFIG_HELP = dict(
@@ -59,7 +39,7 @@ FEATURE_TABLES_CONFIG_HELP = dict(
 )
 
 @dataclass
-class BaseConfig:
+class BaseComponentConfig:
 
     def data_is_contained_in(self, other) -> bool:
         '''
@@ -72,14 +52,20 @@ class BaseConfig:
 
     @property
     def help_dict(self) -> dict[str, str]:
+        '''
+        This is a dictionary which maps the name of each argument to a description of what it does. This is used when
+        printing out the help for a config object, to show what each argument does.
+        '''
         return {}
 
-@dataclass
-class PromptConfig(BaseConfig):
-    pass
 
 @dataclass
-class SequencesConfig(BaseConfig):
+class PromptConfig(BaseComponentConfig):
+    pass
+
+
+@dataclass
+class SequencesConfig(BaseComponentConfig):
     buffer: tuple[int, int] = (5, 5)
     compute_buffer: bool = True
     n_quantiles: int = 10
@@ -101,7 +87,6 @@ class SequencesConfig(BaseConfig):
             self.top_logits_hoverdata <= other.top_logits_hoverdata, # hoverdata rows need to be <=
         ])
         
-
     def __post_init__(self):
         # Get list of group lengths, based on the config params
         self.group_sizes = [self.top_acts_group_size] + [self.quantile_group_size] * self.n_quantiles
@@ -110,11 +95,9 @@ class SequencesConfig(BaseConfig):
     def help_dict(self) -> dict[str, str]:
         return SEQUENCES_CONFIG_HELP
 
-    # def help(self, return_table: bool):
-    #     return super().help(SEQUENCES_CONFIG_HELP, return_table=return_table)
 
 @dataclass
-class ActsHistogramConfig(BaseConfig):
+class ActsHistogramConfig(BaseComponentConfig):
     n_bins: int = 50
 
     def data_is_contained_in(self, other) -> bool:
@@ -125,8 +108,9 @@ class ActsHistogramConfig(BaseConfig):
     def help_dict(self) -> dict[str, str]:
         return ACTIVATIONS_HISTOGRAM_CONFIG_HELP
 
+
 @dataclass
-class LogitsHistogramConfig(BaseConfig):
+class LogitsHistogramConfig(BaseComponentConfig):
     n_bins: int = 50
 
     def data_is_contained_in(self, other) -> bool:
@@ -137,8 +121,9 @@ class LogitsHistogramConfig(BaseConfig):
     def help_dict(self) -> dict[str, str]:
         return LOGITS_HISTOGRAM_CONFIG_HELP
 
+
 @dataclass
-class LogitsTableConfig(BaseConfig):
+class LogitsTableConfig(BaseComponentConfig):
     n_rows: int = 10
 
     def data_is_contained_in(self, other) -> bool:
@@ -149,8 +134,9 @@ class LogitsTableConfig(BaseConfig):
     def help_dict(self) -> dict[str, str]:
         return LOGITS_TABLE_CONFIG_HELP
 
+
 @dataclass
-class FeatureTablesConfig(BaseConfig):
+class FeatureTablesConfig(BaseComponentConfig):
     n_rows: int = 3
 
     def data_is_contained_in(self, other) -> bool:
@@ -161,59 +147,88 @@ class FeatureTablesConfig(BaseConfig):
     def help_dict(self) -> dict[str, str]:
         return FEATURE_TABLES_CONFIG_HELP
 
-GenericConfig = Union[PromptConfig, SequencesConfig, ActsHistogramConfig, LogitsHistogramConfig, LogitsTableConfig, FeatureTablesConfig]
+
+GenericComponentConfig = Union[
+    PromptConfig,
+    SequencesConfig,
+    ActsHistogramConfig,
+    LogitsHistogramConfig,
+    LogitsTableConfig,
+    FeatureTablesConfig,
+]
 
 class Column:
-    def __init__(self, *args, width: Optional[int] = None):
-        self.components = args
+    def __init__(
+        self,
+        *args: GenericComponentConfig,
+        width: Optional[int] = None,
+    ):
+        self.components = list(args)
         self.width = width
     
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Any]:
         return iter(self.components)
 
-    def __getitem__(self, idx: int):
+    def __getitem__(self, idx: int) -> Any:
         return self.components[idx]
     
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.components)
 
 
+
+
+@dataclass_json
+@dataclass
 class SaeVisLayoutConfig:
     '''
     This object allows you to set all the ways the feature vis will be laid out.
 
-    The init method also verifies no components are duplicated, and once it does this it will store each component
-    as an attribute of the object. This means the config for a particular object can be accessed, regardless of which
-    column it's in.
-    '''
-    columns: dict[int | tuple[int, int], Column]
+    Args (specified by the user):
+        columns: 
+            A list of `Column` objects, where each `Column` contains a list of component configs.
+        height:
+            The height of the vis (in pixels).
 
-    prompt_cfg: Optional[PromptConfig]
-    seq_cfg: Optional[SequencesConfig]
-    act_hist_cfg: Optional[ActsHistogramConfig]
-    logits_hist_cfg: Optional[LogitsHistogramConfig]
-    logits_table_cfg: Optional[LogitsTableConfig]
-    feat_tables_cfg: Optional[FeatureTablesConfig]
+    Args (defined during __init__):
+        seq_cfg: 
+            The `SequencesConfig` object, which contains all the parameters for the top activating sequences (and the
+            quantile groups).
+        act_hist_cfg:
+            The `ActsHistogramConfig` object, which contains all the parameters for the activations histogram.
+        logits_hist_cfg:
+            The `LogitsHistogramConfig` object, which contains all the parameters for the logits histogram.
+        logits_table_cfg:
+            The `LogitsTableConfig` object, which contains all the parameters for the logits table.
+        feat_tables_cfg:
+            The `FeatureTablesConfig` object, which contains all the parameters for the feature tables.
+        prompt_cfg:
+            The `PromptConfig` object, which contains all the parameters for the prompt-centric vis.
+    '''
+    columns: dict[int | tuple[int, int], Column] = field(default_factory=dict)
+    height: int = 750
+
+    seq_cfg: SequencesConfig | None = None
+    act_hist_cfg: ActsHistogramConfig | None = None
+    logits_hist_cfg: LogitsHistogramConfig | None = None
+    logits_table_cfg: LogitsTableConfig | None = None
+    feat_tables_cfg: FeatureTablesConfig | None = None
+    prompt_cfg: PromptConfig | None = None
 
     def __init__(self, columns: list[Column], **kwargs):
-        # Define the columns
+        '''
+        The __init__ method will allow you to extract things like `self.seq_cfg` from the object (even though they're 
+        initially stored in the `columns` attribute). It also verifies that there are no duplicate components (which is
+        redundant, and could mess up the HTML).
+        '''
+        # Define the columns, as dict
         self.columns = {idx: col for idx, col in enumerate(columns)}
 
-        # Get the height (i.e. other kwargs)
-        self.height = kwargs.get("height", 750)
-
-        # By default, each component is None
-        self.seq_cfg = None
-        self.act_hist_cfg = None
-        self.logits_hist_cfg = None
-        self.logits_table_cfg = None
-        self.feat_tables_cfg = None
-
-        # Get a list of all components, verify there's no duplicates
-        all_components = [comp for comps in self.columns.values() for comp in comps]
+        # Get a list of all our components, and verify there's no duplicates
+        all_components = [component for column in self.columns.values() for component in column]
         all_component_names = [comp.__class__.__name__.rstrip("Config") for comp in all_components]
         assert len(all_component_names) == len(set(all_component_names)), "Duplicate components in layout config"
-        self.components: dict[str, BaseConfig] = {name: comp for name, comp in zip(all_component_names, all_components)}
+        self.components: dict[str, BaseComponentConfig] = {name: comp for name, comp in zip(all_component_names, all_components)}
 
         # Once we've verified this, store each config component as an attribute
         for comp, comp_name in zip(all_components, all_component_names):
@@ -268,10 +283,10 @@ class SaeVisLayoutConfig:
         n_columns = len(self.columns)
 
         # For each column, add a tree node
-        for col_idx, (column, vis_components) in enumerate(self.columns.items()):
-            
+        for column_idx, vis_components in self.columns.items():
+
             n_components = len(vis_components)
-            tree_column = tree.add(f"Column {column}")
+            tree_column = tree.add(f"Column {column_idx}")
 
             # For each component in that column, add a tree node
             for component_idx, vis_component in enumerate(vis_components):
@@ -285,7 +300,7 @@ class SaeVisLayoutConfig:
                     # Get line break if we're at the final parameter of this component (unless it's the final component
                     # in the final column)
                     suffix = "\n" if (param_idx == n_params - 1) else ""
-                    if (component_idx == n_components - 1) and (col_idx == n_columns - 1): suffix = ""
+                    if (component_idx == n_components - 1) and (column_idx == n_columns - 1): suffix = ""
 
                     # Get argument description, and its default value
                     desc = vis_component.help_dict.get(param, "")
@@ -300,6 +315,32 @@ class SaeVisLayoutConfig:
 
         rprint(tree)
 
+    @classmethod
+    def default_feature_centric_layout(cls) -> "SaeVisLayoutConfig":
+        return cls(
+            columns = [
+                Column(FeatureTablesConfig()),
+                Column(ActsHistogramConfig(), LogitsTableConfig(), LogitsHistogramConfig()),
+                Column(SequencesConfig(stack_mode='stack-none')),
+            ],
+            height = 750,
+        )
+
+    @classmethod
+    def default_prompt_centric_layout(cls) -> "SaeVisLayoutConfig":
+        return cls(
+            columns = [
+                Column(
+                    PromptConfig(),
+                    ActsHistogramConfig(),
+                    LogitsTableConfig(n_rows=5),
+                    SequencesConfig(top_acts_group_size=10, n_quantiles=0),
+                    width=450
+                ),
+            ],
+            height = 1000,
+        )
+
 
 KEY_LAYOUT_VIS = """Key: 
   the tree shows which components will be displayed in each column (from left to right)
@@ -307,31 +348,6 @@ KEY_LAYOUT_VIS = """Key:
   arguments changed from their default are [b dark_orange]orange[/], with default in brackets
   argument descriptions are in [i]italics[/i]
 """
-
-KEY_VIS = """Key: 
-  arguments are [b #00aa00]green[/]
-  arguments changed from their default are [b dark_orange]orange[/], with default in brackets
-  argument descriptions are in [i]italics[/i]
-"""
-
-
-DEFAULT_LAYOUT_FEATURE_VIS = SaeVisLayoutConfig(
-    columns = [
-        Column(FeatureTablesConfig()),
-        Column(ActsHistogramConfig(), LogitsTableConfig(), LogitsHistogramConfig()),
-        Column(SequencesConfig(stack_mode='stack-none')),
-    ],
-    height = 750,
-)
-
-DEFAULT_LAYOUT_PROMPT_VIS = SaeVisLayoutConfig(
-    columns = [
-        Column(PromptConfig(), ActsHistogramConfig(), LogitsTableConfig(n_rows=5), SequencesConfig(top_acts_group_size=10, n_quantiles=0), width=450),
-    ],
-    height = 1000,
-)
-
-
 
 
 SAE_CONFIG_DICT = dict(
@@ -347,7 +363,6 @@ OOMs.",
 )
 
 
-
 @dataclass_json
 @dataclass
 class SaeVisConfig:
@@ -360,20 +375,20 @@ class SaeVisConfig:
     minibatch_size_tokens: int = 64
 
     # Vis
-    feature_centric_layout: SaeVisLayoutConfig = DEFAULT_LAYOUT_FEATURE_VIS
-    prompt_centric_layout: SaeVisLayoutConfig = DEFAULT_LAYOUT_PROMPT_VIS
+    feature_centric_layout: SaeVisLayoutConfig = field(default_factory=SaeVisLayoutConfig.default_feature_centric_layout)
+    prompt_centric_layout: SaeVisLayoutConfig = field(default_factory=SaeVisLayoutConfig.default_prompt_centric_layout)
 
-    # # Misc
+    # Misc
     seed: Optional[int] = 0
     verbose: bool = False
 
-    # # Can't use post init like this, because dataclass json won't support it
-    # def __post_init__(self):
-    #     assert isinstance(self.hook_point, str), f"{self.hook_point=}, should be a string."
+    def to_dict(self) -> dict:
+        '''Used for type hinting (the actual method comes from the `dataclass_json` decorator).'''
+        ...
 
     def help(self, title: str = "SaeVisConfig"):
         '''
-        Performs the `help` method for each of the layout object, as well as for the non-layout-based configs.
+        Performs the `help` method for both of the layout objects, as well as for the non-layout-based configs.
         '''
         # Create table for all the non-layout-based params
         table = Table("Param", "Value (default)", "Description", title=title, show_lines=True)
