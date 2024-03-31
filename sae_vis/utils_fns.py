@@ -193,6 +193,8 @@ HTML_CHARS = {
     "}": "&#125;",
 }
 HTML_ANOMALIES = {
+    "âĢĶ": "&ndash;",
+    "âĢĻ": "&rsquo;",
     "âĢĭ": "&#8203;",
     "Ġ": "&nbsp;",
     "Ċ": "&bsol;n",
@@ -890,7 +892,7 @@ class HistogramData:
                 [tickrange * i for i in range(1, 1+num_positive_ticks)],
             )
             tick_vals = [round(t, 1) for t in tick_vals]
-
+        
         return cls(
             bar_heights = bar_heights,
             bar_values = bar_values,

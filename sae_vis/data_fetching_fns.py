@@ -49,9 +49,12 @@ from sae_vis.data_config_classes import (
 device = get_device()
 
 
+
+
+
 def compute_feat_acts(
     model_acts: Float[Tensor, "batch seq d_in"],
-    feature_idx: list[int],
+    feature_idx: Int[Tensor, "feats"],
     encoder: AutoEncoder,
     encoder_B: Optional[AutoEncoder] = None,
     corrcoef_neurons: Optional[BatchedCorrCoef] = None,
@@ -64,7 +67,7 @@ def compute_feat_acts(
     Args:
         model_acts: Float[Tensor, "batch seq d_in"]
             The activations of the model, which the SAE was trained on.
-        feature_idx: list[int]
+        feature_idx: Int[Tensor, "feats"]
             The features we're computing the activations for. This will be used to index the encoder's weights.
         encoder: AutoEncoder
             The encoder object, which we use to calculate the feature activations.
@@ -267,7 +270,7 @@ def parse_feature_data(
                 nonzero_feat_acts = feat_acts[feat_acts > 0]
                 frac_nonzero = nonzero_feat_acts.numel() / feat_acts.numel()
                 feature_data_dict[feat].acts_histogram_data = ActsHistogramData.from_data(
-                    nonzero_feat_acts,
+                    data = nonzero_feat_acts,
                     n_bins = layout.act_hist_cfg.n_bins,
                     tickmode = '5 ticks',
                     title = f"ACTIVATIONS<br>DENSITY = {frac_nonzero:.3%}"
@@ -392,6 +395,7 @@ def _get_feature_data(
 
     # Make feature_indices a list, for convenience
     if isinstance(feature_indices, int): feature_indices = [feature_indices]
+    feature_idx_tensor = torch.tensor(feature_indices, device=device)
 
     # Get tokens into minibatches, for the fwd pass
     token_minibatches = (tokens,) if cfg.minibatch_size_tokens is None else tokens.split(cfg.minibatch_size_tokens)
@@ -424,7 +428,7 @@ def _get_feature_data(
         
         # Compute feature activations from this
         t0 = time.time()
-        feat_acts = compute_feat_acts(model_acts, feature_indices, encoder, encoder_B, corrcoef_neurons, corrcoef_encoder_B)
+        feat_acts = compute_feat_acts(model_acts, feature_idx_tensor, encoder, encoder_B, corrcoef_neurons, corrcoef_encoder_B)
         time_logs["(3) Computing feature acts from model acts"] += time.time() - t0
 
         # Add these to the lists (we'll eventually concat)
@@ -890,6 +894,7 @@ def get_prompt_data(
 
     # ! Boring setup code
     feature_idx = list(sae_vis_data.feature_data_dict.keys())
+    feature_idx_tensor = torch.tensor(feature_idx, device=device)
     encoder = sae_vis_data.encoder; assert isinstance(encoder, AutoEncoder)
     model = sae_vis_data.model; assert isinstance(model, HookedTransformer)
     cfg = sae_vis_data.cfg; assert isinstance(cfg.hook_point, str), f"{cfg.hook_point=}, expected a string"
@@ -909,7 +914,7 @@ def get_prompt_data(
 
     resid_post, act_post = model_wrapped(tokens, return_logits=False)
     resid_post: Tensor = resid_post.squeeze(0)
-    feat_acts = compute_feat_acts(act_post, feature_idx, encoder).squeeze(0) # [seq feats]
+    feat_acts = compute_feat_acts(act_post, feature_idx_tensor, encoder).squeeze(0) # [seq feats]
 
     
     # ! Use the data we've collected to make the scores_dict and update the sae_vis_data
