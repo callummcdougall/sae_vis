@@ -185,7 +185,10 @@ class TransformerLensWrapper(nn.Module):
 
         # The hook functions work by storing data in model's hook context, so we pop them back out
         activation: Tensor = self.model.hook_dict[self.hook_point].ctx.pop("activation")
-        residual: Tensor = self.model.hook_dict[self.hook_point_resid_final].ctx.pop("activation")
+        if self.hook_point_resid_final == self.hook_point:
+            residual: Tensor = activation
+        else:
+            residual: Tensor = self.model.hook_dict[self.hook_point_resid_final].ctx.pop("activation")
 
         if return_logits:
             return output, residual, activation
