@@ -282,7 +282,7 @@ class SequenceData:
     contribution_to_loss: List[float] = field(default_factory=list)
     top5_token_ids: Optional[List[List[int]]] = None
     top5_logits: Optional[List[List[float]]] = None
-    bottom5_token_ids: Optional[List[List[str]]] = None
+    bottom5_token_ids: Optional[List[List[int]]] = None
     bottom5_logits: Optional[List[List[float]]] = None
     filter: bool = False
 
