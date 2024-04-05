@@ -19,7 +19,7 @@ setup(
     author = 'Callum McDougall',
     author_email = 'cal.s.mcdougall@gmail.com',
     description = "Open-source SAE visualizer, based on Anthropic's published visualizer.",
-    url = 'https://github.com/callummcdougall/sae_visualizer',
+    url = 'https://github.com/callummcdougall/sae_vis',
     classifiers = [
         'Programming Language :: Python :: 3',
         'Operating System :: OS Independent',
