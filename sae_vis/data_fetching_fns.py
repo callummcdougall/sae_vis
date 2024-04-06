@@ -58,6 +58,7 @@ def compute_feat_acts(
     encoder: AutoEncoder,
     encoder_B: Optional[AutoEncoder] = None,
     corrcoef_neurons: Optional[BatchedCorrCoef] = None,
+    corrcoef_encoder: Optional[BatchedCorrCoef] = None,
     corrcoef_encoder_B: Optional[BatchedCorrCoef] = None,
 ) -> Float[Tensor, "batch seq feats"]:
     '''
@@ -75,6 +76,8 @@ def compute_feat_acts(
             The encoder-B object, which we use to calculate the feature activations.
         corrcoef_neurons: Optional[BatchedCorrCoef]
             The object storing the minimal data necessary to compute corrcoef between feature activations & neurons.
+        corrcoef_encoder: Optional[BatchedCorrCoef]
+            The object storing the minimal data necessary to compute corrcoef between pairwise feature activations.
         corrcoef_encoder_B: Optional[BatchedCorrCoef]
             The object storing minimal data to compute corrcoef between feature activations & encoder-B features.
     '''
@@ -94,7 +97,14 @@ def compute_feat_acts(
             einops.rearrange(model_acts, "batch seq d_in -> d_in (batch seq)"),
         )
         
-    # Calculate encoder-B feature acts (we don't need to store them, cause it's just for the left-side feature tables)
+    # Update the CorrCoef object between pairwise feature activations
+    if corrcoef_encoder is not None:
+        corrcoef_encoder.update(
+            einops.rearrange(feat_acts, "batch seq feats -> feats (batch seq)"),
+            einops.rearrange(feat_acts, "batch seq feats -> feats (batch seq)"),
+        )
+
+    # Calculate encoder-B feature acts (we don't need to store encoder-B acts; it's just for left-hand feature tables)
     if corrcoef_encoder_B is not None:
         assert encoder_B is not None,\
             "Error: you need to supply an encoder-B object if you want to calculate encoder-B feature activations."
@@ -123,6 +133,7 @@ def parse_feature_data(
     cfg: SaeVisConfig,
     feature_out_dir: Optional[Float[Tensor, "feats d_out"]] = None,
     corrcoef_neurons: Optional[BatchedCorrCoef] = None,
+    corrcoef_encoder: Optional[BatchedCorrCoef] = None,
     corrcoef_encoder_B: Optional[BatchedCorrCoef] = None,
     progress: Optional[list[tqdm]] = None,
 ) -> tuple[SaeVisData, dict[str, float]]:
@@ -163,6 +174,9 @@ def parse_feature_data(
         
         corrcoef_neurons: Optional[BatchedCorrCoef]
             The object storing the minimal data necessary to compute corrcoef between feature activations & neurons.
+        
+        corrcoef_encoder: Optional[BatchedCorrCoef]
+            The object storing the minimal data necessary to compute corrcoef between feature activations (pairwise).
 
         corrcoef_encoder_B: Optional[BatchedCorrCoef]
             The object storing minimal data to compute corrcoef between feature activations & encoder-B features.
@@ -209,39 +223,71 @@ def parse_feature_data(
 
     # ! Calculate all data for the left-hand column visualisations, i.e. the 3 tables
 
-    if layout.feat_tables_cfg is not None and feature_out_dir is not None:
+    if layout.feature_tables_cfg is not None and feature_out_dir is not None:
+
+        # Store kwargs (makes it easier to turn the tables on and off individually)
+        feature_tables_data_kwargs = defaultdict(dict)
 
         # Table 1: neuron alignment, based on decoder weights
-        top3_neurons_aligned = TopK(tensor=feature_out_dir, k=layout.feat_tables_cfg.n_rows, largest=True)
-        feature_out_l1_norm = feature_out_dir.abs().sum(dim=-1, keepdim=True)
-        pct_of_l1: Arr = np.absolute(top3_neurons_aligned.values) / utils.to_numpy(feature_out_l1_norm)
+        if layout.feature_tables_cfg.neuron_alignment_table:
+            top3_neurons_aligned = TopK(tensor=feature_out_dir, k=layout.feature_tables_cfg.n_rows, largest=True)
+            feature_out_l1_norm = feature_out_dir.abs().sum(dim=-1, keepdim=True)
+            pct_of_l1: Arr = np.absolute(top3_neurons_aligned.values) / utils.to_numpy(feature_out_l1_norm)
+            for i in range(len(feature_indices)):
+                feature_tables_data_kwargs[i].update(
+                    neuron_alignment_indices = top3_neurons_aligned[i].indices.tolist(),
+                    neuron_alignment_values = top3_neurons_aligned[i].values.tolist(),
+                    neuron_alignment_l1 = pct_of_l1[i].tolist(),
+                )
         
         # Table 2: neurons correlated with this feature, based on their activations
-        assert isinstance(corrcoef_neurons, BatchedCorrCoef),\
-            f"Error: corrcoef_neurons should be of type BatchedCorrCoef, instead we got {type(corrcoef_neurons)}"
-        neuron_indices, neuron_pearson, neuron_cossim = corrcoef_neurons.topk_pearson(k=layout.feat_tables_cfg.n_rows)
+        if layout.feature_tables_cfg.correlated_neurons_table:
+            assert isinstance(corrcoef_neurons, BatchedCorrCoef),\
+                f"Error: corrcoef_neurons should be of type BatchedCorrCoef, instead we got {type(corrcoef_neurons)}"
+            neuron_indices, neuron_pearson, neuron_cossim = corrcoef_neurons.topk_pearson(
+                k=layout.feature_tables_cfg.n_rows, exclude_diag=False,
+            )
+            for i in range(len(feature_indices)):
+                feature_tables_data_kwargs[i].update(
+                    correlated_neurons_indices = neuron_indices[i],
+                    correlated_neurons_pearson = neuron_pearson[i],
+                    correlated_neurons_cossim = neuron_cossim[i],
+                )
+
+        # Table 3: primary encoder features correlated with this feature, based on their activations
+        if layout.feature_tables_cfg.correlated_features_table:
+            assert isinstance(corrcoef_encoder, BatchedCorrCoef),\
+                f"Error: corrcoef_encoder should be of type BatchedCorrCoef, instead we got {type(corrcoef_encoder)}"
+            enc_indices, enc_pearson, enc_cossim = corrcoef_encoder.topk_pearson(
+                k=layout.feature_tables_cfg.n_rows, exclude_diag=True,
+            )
+            for i in range(len(feature_indices)):
+                feature_tables_data_kwargs[i].update(
+                    correlated_features_indices = enc_indices[i],
+                    correlated_features_pearson = enc_pearson[i],
+                    correlated_features_cossim = enc_cossim[i],
+                )
         
-        # Table 3: encoder-B features correlated with this feature, based on their activations. Note that we don't need
+        # Table 4: encoder-B features correlated with this feature, based on their activations. Note that we don't need
         # to calculate this if we're not using encoder_B
-        encB_indices = encB_pearson = encB_cossim = [[] for _ in feature_indices]
-        if (corrcoef_encoder_B is not None):
+        if layout.feature_tables_cfg.correlated_b_features_table:
+            assert corrcoef_encoder_B is not None,\
+                f"Error: encoder_B is None, but you've set `correlated_b_features_table=True` in the layout."
             assert isinstance(corrcoef_encoder_B, BatchedCorrCoef),\
                 f"Error: corrcoef_encoder_B should be of type BatchedCorrCoef, instead we got {type(corrcoef_encoder_B)}"
-            encB_indices, encB_pearson, encB_cossim = corrcoef_encoder_B.topk_pearson(k=layout.feat_tables_cfg.n_rows)
-        
+            encB_indices, encB_pearson, encB_cossim = corrcoef_encoder_B.topk_pearson(
+                k=layout.feature_tables_cfg.n_rows, exclude_diag=False,
+            )
+            for i in range(len(feature_indices)):
+                feature_tables_data_kwargs[i].update(
+                    correlated_b_features_indices = encB_indices[i],
+                    correlated_b_features_pearson = encB_pearson[i],
+                    correlated_b_features_cossim = encB_cossim[i],
+                )
+                
         # Add all this data to the list of FeatureTablesData objects
         for i, feat in enumerate(feature_indices):
-            feature_data_dict[feat].feature_tables_data = FeatureTablesData(
-                neuron_alignment_indices = top3_neurons_aligned[i].indices.tolist(),
-                neuron_alignment_values = top3_neurons_aligned[i].values.tolist(),
-                neuron_alignment_l1 = pct_of_l1[i].tolist(),
-                correlated_neurons_indices = neuron_indices[i],
-                correlated_neurons_pearson = neuron_pearson[i],
-                correlated_neurons_cossim = neuron_cossim[i],
-                correlated_features_indices = encB_indices[i],
-                correlated_features_pearson = encB_pearson[i],
-                correlated_features_cossim = encB_cossim[i],
-            )
+            feature_data_dict[feat].feature_tables_data = FeatureTablesData(**feature_tables_data_kwargs[i])
 
     time_logs["(4) Getting data for tables"] = time.time() - t0
     t0 = time.time()
@@ -409,6 +455,7 @@ def _get_feature_data(
 
     # Create objects to store the data for computing correlation coefficients (for left tables), if we're using them
     corrcoef_neurons = BatchedCorrCoef()
+    corrcoef_encoder = BatchedCorrCoef()
     corrcoef_encoder_B = BatchedCorrCoef() if encoder_B is not None else None
 
     # Get encoder & decoder directions
@@ -428,7 +475,15 @@ def _get_feature_data(
         
         # Compute feature activations from this
         t0 = time.time()
-        feat_acts = compute_feat_acts(model_acts, feature_idx_tensor, encoder, encoder_B, corrcoef_neurons, corrcoef_encoder_B)
+        feat_acts = compute_feat_acts(
+            model_acts=model_acts,
+            feature_idx=feature_idx_tensor,
+            encoder=encoder,
+            encoder_B=encoder_B,
+            corrcoef_neurons=corrcoef_neurons,
+            corrcoef_encoder=corrcoef_encoder,
+            corrcoef_encoder_B=corrcoef_encoder_B,
+        )
         time_logs["(3) Computing feature acts from model acts"] += time.time() - t0
 
         # Add these to the lists (we'll eventually concat)
@@ -453,6 +508,7 @@ def _get_feature_data(
         cfg = cfg,
         feature_out_dir = feature_out_dir,
         corrcoef_neurons = corrcoef_neurons,
+        corrcoef_encoder = corrcoef_encoder,
         corrcoef_encoder_B = corrcoef_encoder_B,
         progress = progress,
     )

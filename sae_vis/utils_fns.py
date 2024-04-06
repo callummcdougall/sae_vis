@@ -769,15 +769,34 @@ class BatchedCorrCoef:
         self.x2_sum += einops.reduce(x ** 2, "X N -> X", "sum")
         self.y2_sum += einops.reduce(y ** 2, "Y N -> Y", "sum")
 
-    def corrcoef(self) -> Tuple[Float[Tensor, "X Y"], Float[Tensor, "X Y"]]:
+    def corrcoef(
+        self,
+        exclude_diag: bool = False,
+    ) -> Tuple[Float[Tensor, "X Y"], Float[Tensor, "X Y"]]:
+        '''
+        Computes the correlation coefficients between x and y, using the formulae given in the class docstring.
 
+        Args:
+            exclude_diag: bool
+                If True, we assume X and Y are the same dataset, and we don't include the diagonal in the topk (since
+                correlation with self is always 1, this is not interesting).
+        '''
+        # Compute cosine sim
         cossim_numer = self.xy_sum
         cossim_denom = torch.sqrt(torch.outer(self.x2_sum, self.y2_sum)) + 1e-6
         cossim = cossim_numer / cossim_denom
 
+        # Compute pearson corrcoef
         pearson_numer = self.n * self.xy_sum - torch.outer(self.x_sum, self.y_sum)
         pearson_denom = torch.sqrt(torch.outer(self.n * self.x2_sum - self.x_sum ** 2, self.n * self.y2_sum - self.y_sum ** 2)) + 1e-6
         pearson = pearson_numer / pearson_denom
+
+        # Exclude the diagonal if necessary (check datasets are the same shape first)
+        if exclude_diag:
+            d = cossim.shape[0]
+            assert tuple(cossim.shape) == tuple(pearson.shape) == (d, d), "X and Y should be the same dataset"
+            cossim[range(d), range(d)] = 0.0
+            pearson[range(d), range(d)] = 0.0
 
         return pearson, cossim
 
@@ -785,6 +804,7 @@ class BatchedCorrCoef:
         self,
         k: int,
         largest: bool = True,
+        exclude_diag: bool = False,
     ) -> Tuple[list[list[int]], list[list[float]], list[list[float]]]:
         '''
         Takes topk of the pearson corrcoefs over the y-dimension (e.g. giving us the most correlated neurons or most
@@ -795,6 +815,9 @@ class BatchedCorrCoef:
                 Number of top indices to take (usually 3, for the left-hand tables)
             largest: bool
                 If True, then we take the largest k indices. If False, then we take the smallest k indices.
+            exclude_diag: bool
+                If True, we assume X and Y are the same dataset, and we don't include the diagonal in the topk (since
+                correlation with self is always 1, this is not interesting).
 
         Returns:
             pearson_indices: list[list[int]]
@@ -805,10 +828,10 @@ class BatchedCorrCoef:
                 Values of cosine similarity for each of the topk indices
         '''
         # Get correlation coefficient, using the formula from corrcoef method
-        pearson, cossim = self.corrcoef()
+        pearson, cossim = self.corrcoef(exclude_diag=exclude_diag)
 
         # Get the top pearson values
-        pearson_topk = TopK(pearson, k, largest) # shape (X, k)
+        pearson_topk = TopK(tensor=pearson, k=k, largest=largest) # shape (X, k)
 
         # Get the cossim values for the top pearson values, i.e. cossim_values[X, k] = cossim[X, pearson_indices[X, k]]
         cossim_values = eindex(cossim, pearson_topk.indices, "X [X k]")

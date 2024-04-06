@@ -35,7 +35,11 @@ LOGITS_TABLE_CONFIG_HELP = dict(
 )
 
 FEATURE_TABLES_CONFIG_HELP = dict(
-    n_rows = "Number of rows to show for each feature table."
+    n_rows = "Number of rows to show for each feature table.",
+    neuron_alignment_table = "Whether to show the neuron alignment table.",
+    correlated_neurons_table = "Whether to show the correlated neurons table.",
+    correlated_features_table = "Whether to show the (pairwise) correlated features table.",
+    correlated_b_features_table = "Whether to show the correlated encoder-B features table.",
 )
 
 @dataclass
@@ -138,10 +142,20 @@ class LogitsTableConfig(BaseComponentConfig):
 @dataclass
 class FeatureTablesConfig(BaseComponentConfig):
     n_rows: int = 3
+    neuron_alignment_table: bool = True
+    correlated_neurons_table: bool = True
+    correlated_features_table: bool = True
+    correlated_b_features_table: bool = False
 
     def data_is_contained_in(self, other) -> bool:
         assert isinstance(other, self.__class__)
-        return self.n_rows <= other.n_rows
+        return all([
+            self.n_rows <= other.n_rows,
+            self.neuron_alignment_table <= other.neuron_alignment_table,
+            self.correlated_neurons_table <= other.correlated_neurons_table,
+            self.correlated_features_table <= other.correlated_features_table,
+            self.correlated_b_features_table <= other.correlated_b_features_table,
+        ])
 
     @property
     def help_dict(self) -> dict[str, str]:
@@ -200,7 +214,7 @@ class SaeVisLayoutConfig:
             The `LogitsHistogramConfig` object, which contains all the parameters for the logits histogram.
         logits_table_cfg:
             The `LogitsTableConfig` object, which contains all the parameters for the logits table.
-        feat_tables_cfg:
+        feature_tables_cfg:
             The `FeatureTablesConfig` object, which contains all the parameters for the feature tables.
         prompt_cfg:
             The `PromptConfig` object, which contains all the parameters for the prompt-centric vis.
@@ -212,7 +226,7 @@ class SaeVisLayoutConfig:
     act_hist_cfg: ActsHistogramConfig | None = None
     logits_hist_cfg: LogitsHistogramConfig | None = None
     logits_table_cfg: LogitsTableConfig | None = None
-    feat_tables_cfg: FeatureTablesConfig | None = None
+    feature_tables_cfg: FeatureTablesConfig | None = None
     prompt_cfg: PromptConfig | None = None
 
     def __init__(self, columns: list[Column], **kwargs):
@@ -244,7 +258,7 @@ class SaeVisLayoutConfig:
                 case "LogitsTable":
                     self.logits_table_cfg = comp
                 case "FeatureTables":
-                    self.feat_tables_cfg = comp
+                    self.feature_tables_cfg = comp
                 case _:
                     raise ValueError(f"Unknown component name {comp_name}")
 

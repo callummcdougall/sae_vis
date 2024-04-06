@@ -9,6 +9,7 @@ from jaxtyping import Int
 import re
 from copy import deepcopy
 import json
+from tqdm.auto import tqdm
 
 from transformer_lens import HookedTransformer
 
@@ -66,6 +67,10 @@ class FeatureTablesData:
 
         correlated_features...
             The data for the correlated features table (each of its 3 columns). In other words, the data containing
+            which features in this encoder are most correlated with each other.
+        
+        correlated_b_features...
+            The data for the correlated features table (each of its 3 columns). In other words, the data containing
             which features in encoder-B are most correlated with those in the original encoder. Note, this one might be
             absent if we're not using a B-encoder.
     '''
@@ -78,6 +83,9 @@ class FeatureTablesData:
     correlated_features_indices: list[int] = field(default_factory=list)
     correlated_features_pearson: list[float] = field(default_factory=list)
     correlated_features_cossim: list[float] = field(default_factory=list)
+    correlated_b_features_indices: list[int] = field(default_factory=list)
+    correlated_b_features_pearson: list[float] = field(default_factory=list)
+    correlated_b_features_cossim: list[float] = field(default_factory=list)
 
     def _get_html_data(
         self,
@@ -93,45 +101,40 @@ class FeatureTablesData:
         Note, we only ever use this obj in the context of the left-hand column of the feature-centric vis, and it's
         always the same width & height, which is why there's no customization available for this function.
         '''
-        # Crop the lists to `cfg.n_rows` (first checking the config doesn't ask for more rows than we have)
-        assert cfg.n_rows <= len(self.neuron_alignment_indices)
-        neuron_alignment_indices = self.neuron_alignment_indices[:cfg.n_rows]
-        neuron_alignment_values = self.neuron_alignment_values[:cfg.n_rows]
-        neuron_alignment_l1 = self.neuron_alignment_l1[:cfg.n_rows]
-        correlated_neurons_indices = self.correlated_neurons_indices[:cfg.n_rows]
-        correlated_neurons_pearson = self.correlated_neurons_pearson[:cfg.n_rows]
-        correlated_neurons_cossim = self.correlated_neurons_cossim[:cfg.n_rows]
-
         # Read HTML from file, and replace placeholders with real ID values
         html_str = (Path(__file__).parent / "html" / "feature_tables_template.html").read_text()
         html_str = html_str.replace("FEATURE_TABLES_ID", f"feature-tables-{id_suffix}")
 
-        # Add the neuron alignment and neuron correlation data to the object which will be turned into JavaScript
-        data: dict[str, Any] = {
-            "neuronAlignment": [
+        # Create dictionary storing the data
+        data: dict[str, list[dict]] = {}
+
+        # Store the neuron alignment data, if it exists
+        if len(self.neuron_alignment_indices) > 0:
+            assert len(self.neuron_alignment_indices) >= cfg.n_rows, "Not enough rows!"
+            data["neuronAlignment"] = [
                 {"index": I, "value": f"{V:+.3f}", "percentageL1": f"{L:.1%}"}
-                for I, V, L in zip(neuron_alignment_indices, neuron_alignment_values, neuron_alignment_l1)
-            ],
-            "correlatedNeurons": [
-                {"index": I, "value": f"{P:+.3f}", "percentageL1": f"{C:+.3f}"}
-                for I, P, C in zip(correlated_neurons_indices, correlated_neurons_pearson, correlated_neurons_cossim)
-            ],
-        }
-
-        # If we have correlated features from encoder_B, add that to the JavaScript data
-        if len(self.correlated_features_indices) > 0:
-            correlated_features_indices = self.correlated_features_indices[:cfg.n_rows]
-            correlated_features_pearson = self.correlated_features_pearson[:cfg.n_rows]
-            correlated_features_cossim = self.correlated_features_cossim[:cfg.n_rows]
-
-            assert (correlated_features_pearson is not None) and (correlated_features_cossim is not None), "All or none"
-            data["correlatedFeaturesB"] = [
-                {"index": I, "value": f"{P:+.3f}", "percentageL1": f"{C:+.3f}"}
-                for I, P, C in zip(correlated_features_indices, correlated_features_pearson, correlated_features_cossim)
+                for I, V, L in zip(
+                    self.neuron_alignment_indices,
+                    self.neuron_alignment_values,
+                    self.neuron_alignment_l1
+                )
             ]
-        # If not, remove that table from the HTML string
-        else:
-            html_str = re.sub(r'<h4>CORRELATED FEATURES \(B-ENCODER\)</h4>.*?</table>', "", html_str, flags=re.DOTALL)
+
+        # Store the other 3, if they exist (they're all in the same format, so we can do it in a for loop)
+        for name, js_name in zip(
+            ["correlated_neurons", "correlated_features", "correlated_b_features"],
+            ["correlatedNeurons", "correlatedFeatures", "correlatedFeaturesB"],
+        ):
+            if len(getattr(self, f"{name}_indices")) > 0:
+                assert len(getattr(self, f"{name}_indices")) >= cfg.n_rows, "Not enough rows!"
+                data[js_name] = [
+                    {"index": I, "value": f"{P:+.3f}", "percentageL1": f"{C:+.3f}"}
+                    for I, P, C in zip(
+                        getattr(self, f"{name}_indices")[:cfg.n_rows],
+                        getattr(self, f"{name}_pearson")[:cfg.n_rows],
+                        getattr(self, f"{name}_cossim")[:cfg.n_rows]
+                    )
+                ]
 
         return HTML(
             html_data = {column: html_str},
@@ -919,7 +922,10 @@ class SaeVisData:
         decode_fn = get_decode_html_safe_fn(self.model.tokenizer)
 
         # For each FeatureData object, we get the html_obj for it's feature-centric vis, and merge it with HTML_OBJ
-        for feature, feature_data in self.feature_data_dict.items():
+        iterator = list(self.feature_data_dict.items())
+        if self.cfg.verbose: iterator = tqdm(iterator, desc="Saving feature-centric vis")
+
+        for feature, feature_data in iterator:
 
             # Get the HTML object for a single-feature view
             html_obj = feature_data._get_html_data_feature_centric(self.cfg.feature_centric_layout, decode_fn)
