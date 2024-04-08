@@ -31,4 +31,5 @@ In the demo Colab, we show the two different types of vis which are supported by
 # Version history (recording started at `0.2.9`)
 
 * `0.2.9` - added table for pairwise feature correlations (not just encoder-B correlations) 
-* `0.2.10` - fix some anomalous characters, and update PyPI with longer description
+* `0.2.10` - fix some anomalous characters
+* `0.2.11` - update PyPI with longer description
