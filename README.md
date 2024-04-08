@@ -1,8 +1,12 @@
+# Summary
+
 This codebase was designed to replicate Anthropic's sparse autoencoder visualisations, which you can see [here](https://transformer-circuits.pub/2023/monosemantic-features/vis/a1.html). The codebase provides 2 different views: a **feature-centric view** (which is like the one in the link, i.e. we look at one particular feature and see things like which tokens fire strongest on that feature) and a **prompt-centric view** (where we look at once particular prompt and see which features fire strongest on that prompt according to a variety of different metrics).
 
 Install with `pip install sae-vis`. Link to PyPI page [here](https://pypi.org/project/sae-vis/).
 
-**Important note** - this repo has recently been significantly restructured. The recent changes include:
+# Features & Links
+
+**Important note** - this repo was significantly restructured in March 2024 (we'll remove this message at the end of April). The recent changes include:
 
 - The ability to view multiple features on the same page (rather than just one feature at a time)
 - D3-backed visualisations (which can do things like add lines to histograms as you hover over tokens)
@@ -23,3 +27,8 @@ In the demo Colab, we show the two different types of vis which are supported by
 2. **Prompt-centric vis**, where you input a custom prompt and see which features score highest on that prompt, according to a variety of possible metrics.
 
 <img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-snip-2.png" width="800">
+
+# Version history (recording started at `0.2.9`)
+
+* `0.2.9` - added table for pairwise feature correlations (not just encoder-B correlations) 
+* `0.2.10` - fix some anomalous characters, and update PyPI with longer description
