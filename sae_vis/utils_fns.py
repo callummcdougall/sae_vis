@@ -193,9 +193,15 @@ HTML_CHARS = {
     "}": "&#125;",
 }
 HTML_ANOMALIES = {
-    "âĢĶ": "&ndash;",
+    "âĢĶ": "&mdash;",
+    "âĢĵ": "&ndash;",
     "âĢĻ": "&rsquo;",
     "âĢĭ": "&#8203;",
+    "âĢľ": "&ldquo;",
+    "âĢĿ": "&rdquo;",
+    "âĢĺ": "&lsquo;",
+    "âĢĻ": "&rsquo;",
+    # "âĢĭ": " ", # TODO: this is actually zero width space character. what's the best way to represent it?
     "Ġ": "&nbsp;",
     "Ċ": "&bsol;n",
     "ĉ": "&bsol;t",
