@@ -618,7 +618,7 @@ if MAIN:
 def apply_indent(
     text: str,
     prefix: str,
-    first_line_indented: bool = False,
+    first_line_indented: bool = True,
 ) -> str:
     '''
     Indents a string at every new line (e.g. by spaces or tabs). This is useful for formatting when we're dumping things
@@ -632,7 +632,7 @@ def apply_indent(
         first_line_indented:
             Whether the first line should be indented. If False, then the first line will be left as it is.
     '''
-    text_indented = "\n".join(prefix + line for line in text.split("\n"))
+    text_indented = "\n".join(prefix + line for line in text.strip().split("\n"))
     if not first_line_indented:
         text_indented = text_indented[len(prefix):]
     

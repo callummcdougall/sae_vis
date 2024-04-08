@@ -174,7 +174,7 @@ function createDropdowns(DATA) {{
     // the dropdowns change. This includes the initial call to `createVis` with the first key, which is START_KEY.
 
     const START_KEY = {json.dumps(first_key)};
-    {apply_indent(js_create_dropdowns, "    ")}
+    {apply_indent(js_create_dropdowns, " " * 4)}
 }}
 
 function createVis(DATA) {{
@@ -182,7 +182,7 @@ function createVis(DATA) {{
     // object here will be ALL_DATA[key] for some key (the key will be a feature index in the feature-centric vis, and
     // it'll be something like "act_quantile|'first' (6)" in the prompt-centric vis).
 
-    {apply_indent(js_create_vis, "    ")}
+    {apply_indent(js_create_vis, " " * 4)}
 }}
 
 function defineData() {{
@@ -221,10 +221,10 @@ function defineData() {{
                 # Deal with case (2) here
                 column = layout.columns[col_idx[0]]
                 column_id = "column-" + "-".join(map(str, col_idx))
-            html_str += "\n\n" + grid_column(html_str_column, id=column_id, column=column, layout=layout)
+            html_str += "\n\n" + grid_column(html_str_column, column=column, layout=layout, id=column_id)
 
-        # Remove empty style attributes
-        html_str = re.sub(r' style=""', "", html_str)
+        # # Remove empty style attributes
+        # html_str = re.sub(r' style=""', "", html_str)
         
         # Create the full HTML string: wrap everything in `grid-container`, and also create object for holding dropdowns
         full_html_str = f"""
@@ -292,6 +292,10 @@ def grid_column(
     
     # Define full HTML string
     html_str = f'''<div {id_str}class="grid-column" {style_str}>\n{apply_indent(html_contents, indent)}</div>'''
+
+    # # Un-indent the final </div>
+    # html_str = html_str[:-len(f"{indent}</div>")] + "\n</div>"
+
     return html_str
 
 

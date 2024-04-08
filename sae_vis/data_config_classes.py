@@ -229,14 +229,15 @@ class SaeVisLayoutConfig:
     feature_tables_cfg: FeatureTablesConfig | None = None
     prompt_cfg: PromptConfig | None = None
 
-    def __init__(self, columns: list[Column], **kwargs):
+    def __init__(self, columns: list[Column], height: int = 750):
         '''
         The __init__ method will allow you to extract things like `self.seq_cfg` from the object (even though they're 
         initially stored in the `columns` attribute). It also verifies that there are no duplicate components (which is
         redundant, and could mess up the HTML).
         '''
-        # Define the columns, as dict
+        # Define the columns (as dict) and the height
         self.columns = {idx: col for idx, col in enumerate(columns)}
+        self.height = height
 
         # Get a list of all our components, and verify there's no duplicates
         all_components = [component for column in self.columns.values() for component in column]

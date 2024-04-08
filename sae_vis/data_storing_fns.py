@@ -716,7 +716,7 @@ class FeatureData:
     
     def _get_html_data_feature_centric(
         self,
-        layout_cfg: SaeVisLayoutConfig,
+        layout: SaeVisLayoutConfig,
         decode_fn: Callable,
     ) -> HTML:
         '''
@@ -738,7 +738,7 @@ class FeatureData:
         html_obj = HTML()
 
         # For every column in this feature-centric layout, we add all the components in that column
-        for column_idx, column_components in layout_cfg.columns.items():
+        for column_idx, column_components in layout.columns.items():
 
             for component_config in column_components:
 
@@ -755,7 +755,7 @@ class FeatureData:
 
     def _get_html_data_prompt_centric(
         self,
-        layout_cfg: SaeVisLayoutConfig,
+        layout: SaeVisLayoutConfig,
         decode_fn: Callable,
         column_idx: int,
         bold_idx: int,
@@ -783,16 +783,16 @@ class FeatureData:
         html_obj = HTML()
 
         # Verify that we only have a single column
-        assert layout_cfg.columns.keys() == {0},\
-            f"prompt_centric_layout should only have 1 column, instead found cols {layout_cfg.columns.keys()}"
-        assert layout_cfg.prompt_cfg is not None,\
+        assert layout.columns.keys() == {0},\
+            f"prompt_centric_layout should only have 1 column, instead found cols {layout.columns.keys()}"
+        assert layout.prompt_cfg is not None,\
             "prompt_centric_cfg should include a PromptConfig, but found None"
-        if layout_cfg.seq_cfg is not None:
-            assert (layout_cfg.seq_cfg.n_quantiles == 0) or (layout_cfg.seq_cfg.stack_mode == "stack-all"),\
+        if layout.seq_cfg is not None:
+            assert (layout.seq_cfg.n_quantiles == 0) or (layout.seq_cfg.stack_mode == "stack-all"),\
             "prompt_centric_layout should have stack_mode='stack-all' if n_quantiles > 0, so that it fits in 1 col"
 
         # For every component in the single column of this prompt-centric layout, add all the components in that column
-        for component_config in layout_cfg.columns[0]:
+        for component_config in layout.columns[0]:
 
             component = self.get_component_from_config(component_config)
 
@@ -1004,7 +1004,7 @@ class SaeVisData:
                 
                 # Get HTML object at this column (which includes JavaScript to dynamically set the title)
                 html_obj += self.feature_data_dict[feature_idx]._get_html_data_prompt_centric(
-                    layout_cfg = self.cfg.prompt_centric_layout,
+                    layout = self.cfg.prompt_centric_layout,
                     decode_fn = decode_fn,
                     column_idx = i,
                     bold_idx = _seq_pos,
