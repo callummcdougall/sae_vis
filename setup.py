@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name = 'sae-vis',
-    version = '0.2.11',
+    version = '0.2.12',
     packages = find_packages(),
     install_requires = [
         'torch',
