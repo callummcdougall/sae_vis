@@ -10,6 +10,7 @@ setup(
     install_requires = [
         'torch',
         'einops',
+        'eindex-callum @ git+https://github.com/callummcdougall/eindex.git',
         'datasets',
         'dataclasses-json',
         'jaxtyping',
