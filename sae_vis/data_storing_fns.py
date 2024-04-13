@@ -1,7 +1,7 @@
 import numpy as np
 import itertools
 from pathlib import Path
-from torch import Tensor
+from torch import Tensor, nn
 from typing import Optional, Union, Any, Callable
 from dataclasses import dataclass, field
 from dataclasses_json import dataclass_json
@@ -13,14 +13,17 @@ from tqdm.auto import tqdm
 
 from transformer_lens import HookedTransformer
 
-from sae_vis.model_fns import AutoEncoder
+from sae_vis.model_fns import (
+    AutoEncoder,
+    AutoEncoderConfig,
+)
 
 from sae_vis.utils_fns import (
     to_str_tokens,
     QuantileCalculator,
     HistogramData,
-    get_decode_html_safe_fn,
     unprocess_str_tok,
+    get_decode_html_safe_fn,
     max_or_1,
 )
 from sae_vis.html_fns import (
@@ -126,7 +129,7 @@ class FeatureTablesData:
             ["correlatedNeurons", "correlatedFeatures", "correlatedFeaturesB"],
         ):
             if len(getattr(self, f"{name}_indices")) > 0:
-                assert len(getattr(self, f"{name}_indices")) >= cfg.n_rows, "Not enough rows!"
+                # assert len(getattr(self, f"{name}_indices")) >= cfg.n_rows, "Not enough rows!"
                 data[js_name] = [
                     {"index": I, "value": f"{P:+.3f}", "percentageL1": f"{C:+.3f}"}
                     for I, P, C in zip(
@@ -874,7 +877,7 @@ class SaeVisData:
     @classmethod
     def create(
         cls,
-        encoder: AutoEncoder,
+        encoder: nn.Module,
         model: HookedTransformer,
         tokens: Int[Tensor, "batch seq"],
         cfg: SaeVisConfig,
@@ -882,6 +885,16 @@ class SaeVisData:
     ) -> "SaeVisData":
         
         from sae_vis.data_fetching_fns import get_feature_data
+
+        # If encoder isn't an AutoEncoder, we wrap it in one
+        if not isinstance(encoder, AutoEncoder):
+            assert set(encoder.state_dict().keys()) == {"W_enc", "W_dec", "b_enc", "b_dec"},\
+                "If encoder isn't an AutoEncoder, it should have weights 'W_enc', 'W_dec', 'b_enc', 'b_dec'"
+            d_in, d_hidden = encoder.W_enc.shape
+            device = encoder.W_enc.device
+            encoder_cfg = AutoEncoderConfig(d_in=d_in, d_hidden=d_hidden)
+            encoder = AutoEncoder(encoder_cfg).to(device)
+            encoder.load_state_dict(encoder.state_dict());
 
         sae_vis_data = get_feature_data(
             encoder = encoder,

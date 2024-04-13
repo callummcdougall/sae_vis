@@ -350,21 +350,26 @@ class TopK:
         '''
         # If no tensor mask is provided, then we just return the topk values and indices
         if tensor_mask is None or not tensor_mask.any():
-            topk = tensor.topk(k=self.k, largest=self.largest)
+            k = min(self.k, tensor.shape[-1])
+            topk = tensor.topk(k=k, largest=self.largest)
             return utils.to_numpy(topk.values), utils.to_numpy(topk.indices)
 
         # Get the topk of the tensor, but only computed over the values of the tensor which are nontrivial
+        assert tensor_mask.shape == tensor.shape[:-1], "Error: unexpected shape for tensor mask."
         tensor_nontrivial_values = tensor[tensor_mask] # shape [rows d]
-        topk = tensor_nontrivial_values.topk(k=self.k, largest=self.largest) # shape [rows k]
+        k = min(self.k, tensor_nontrivial_values.shape[-1])
+        k = self.k
+        topk = tensor_nontrivial_values.topk(k=k, largest=self.largest) # shape [rows k]
 
         # Get an array of indices and values (with unimportant elements) which we'll index into using the topk object
-        topk_shape = (*tensor_mask.shape, self.k)
+        topk_shape = (*tensor_mask.shape, k)
         topk_indices = torch.zeros(topk_shape).to(tensor.device).long() # shape [... k]
         topk_indices[tensor_mask] = topk.indices
         topk_values = torch.zeros(topk_shape).to(tensor.device) # shape [... k]
         topk_values[tensor_mask] = topk.values
 
         return utils.to_numpy(topk_values), utils.to_numpy(topk_indices)
+
 
 
 

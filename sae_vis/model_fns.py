@@ -13,51 +13,69 @@ import re
 
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
 
+# @dataclass
+# class AutoEncoderConfig:
+#     '''Class for storing configuration parameters for the autoencoder'''
+#     seed: int = 42
+#     batch_size: int = 32
+#     buffer_mult: int = 384
+#     epochs: int = 10
+#     lr: float = 1e-3
+#     num_tokens: int = int(2e9)
+#     
+#     beta1: float = 0.9
+#     beta2: float = 0.99
+#     dict_mult: int = 8
+#     seq_len: int = 128
+#     d_in: int = 2048
+#     enc_dtype: str = "fp32"
+#     remove_rare_dir: bool = False
+#     model_batch_size: int = 64
+#     device: str = "cuda"
+
+#     def __post_init__(self):
+#         '''Using kwargs, so that we can pass in a dict of parameters which might be
+#         a superset of the above, without error.'''
+#         self.buffer_size = self.batch_size * self.buffer_mult
+#         self.buffer_batches = self.buffer_size // self.seq_len
+#         self.dtype = DTYPES[self.enc_dtype]
+#         self.d_hidden = self.d_in * self.dict_mult
+
+
 @dataclass
 class AutoEncoderConfig:
     '''Class for storing configuration parameters for the autoencoder'''
-    seed: int = 42
-    batch_size: int = 32
-    buffer_mult: int = 384
-    epochs: int = 10
-    lr: float = 1e-3
-    num_tokens: int = int(2e9)
+    d_in: int
+    d_hidden: int | None = None
+    dict_mult: int | None = None
+
     l1_coeff: float = 3e-4
-    beta1: float = 0.9
-    beta2: float = 0.99
-    dict_mult: int = 8
-    seq_len: int = 128
-    d_in: int = 2048
-    enc_dtype: str = "fp32"
-    remove_rare_dir: bool = False
-    model_batch_size: int = 64
-    device: str = "cuda"
 
     def __post_init__(self):
-        '''Using kwargs, so that we can pass in a dict of parameters which might be
-        a superset of the above, without error.'''
-        self.buffer_size = self.batch_size * self.buffer_mult
-        self.buffer_batches = self.buffer_size // self.seq_len
-        self.dtype = DTYPES[self.enc_dtype]
-        self.d_hidden = self.d_in * self.dict_mult
+        assert int(self.d_hidden is None) + int(self.dict_mult is None) == 1,\
+            "Exactly one of d_hidden or dict_mult must be provided"
+        if (self.d_hidden is None) and isinstance(self.dict_mult, int):
+            self.d_hidden = self.d_in * self.dict_mult
+        elif (self.dict_mult is None) and isinstance(self.d_hidden, int):
+            assert self.d_hidden % self.d_in == 0, "d_hidden must be a multiple of d_in"
+            self.dict_mult = self.d_hidden // self.d_in
+
 
 
 
 class AutoEncoder(nn.Module):
     def __init__(self, cfg: AutoEncoderConfig):
         super().__init__()
-
         self.cfg = cfg
-        torch.manual_seed(cfg.seed)
+
+        assert isinstance(cfg.d_hidden, int)
 
         # W_enc has shape (d_in, d_encoder), where d_encoder is a multiple of d_in (cause dictionary learning; overcomplete basis)
-        self.W_enc = nn.Parameter(torch.nn.init.kaiming_uniform_(torch.empty(cfg.d_in, cfg.d_hidden, dtype=cfg.dtype)))
-        self.W_dec = nn.Parameter(torch.nn.init.kaiming_uniform_(torch.empty(cfg.d_hidden, cfg.d_in, dtype=cfg.dtype)))
-        self.b_enc = nn.Parameter(torch.zeros(cfg.d_hidden, dtype=cfg.dtype))
-        self.b_dec = nn.Parameter(torch.zeros(cfg.d_in, dtype=cfg.dtype))
+        self.W_enc = nn.Parameter(torch.nn.init.kaiming_uniform_(torch.empty(cfg.d_in, cfg.d_hidden)))
+        self.W_dec = nn.Parameter(torch.nn.init.kaiming_uniform_(torch.empty(cfg.d_hidden, cfg.d_in)))
+        self.b_enc = nn.Parameter(torch.zeros(cfg.d_hidden))
+        self.b_dec = nn.Parameter(torch.zeros(cfg.d_in))
         self.W_dec.data[:] = self.W_dec / self.W_dec.norm(dim=-1, keepdim=True)
-
-        self.to(cfg.device)
 
     def forward(self, x: torch.Tensor):
         x_cent = x - self.b_dec
@@ -86,27 +104,20 @@ class AutoEncoder(nn.Module):
         version 25 is the final checkpoint of the first autoencoder run,
         version 47 is the final checkpoint of the second autoencoder run.
         """
-
         assert version in ["run1", "run2"]
         version = 25 if version=="run1" else 47
-
-        # Download config
-        cfg = utils.download_file_from_hf("NeelNanda/sparse_autoencoder", f"{version}_cfg.json")
-        assert isinstance(cfg, dict)
-        # Remove unnecessary params, and rename d_mlp to d_in
-        cfg.pop("buffer_batches", None)
-        cfg.pop("buffer_size", None)
-        cfg["d_in"] = cfg.pop("d_mlp")
-        # Convert the config to AutoEncoderConfig class, then create the Autoencoder
-        cfg = AutoEncoderConfig(**cfg)
-        self = cls(cfg=cfg)
-
+        
         # Load in state dict
         state_dict = utils.download_file_from_hf("NeelNanda/sparse_autoencoder", f"{version}.pt", force_is_torch=True)
         assert isinstance(state_dict, dict)
-        self.load_state_dict(state_dict)
+        assert set(state_dict.keys()) == {"W_enc", "W_dec", "b_enc", "b_dec"}
+        d_in, d_hidden = state_dict["W_enc"].shape
 
-        return self
+        # Create autoencoder
+        cfg = AutoEncoderConfig(d_in=d_in, d_hidden=d_hidden)
+        encoder = cls(cfg)
+        encoder.load_state_dict(state_dict);
+        return encoder
 
     def __repr__(self) -> str:
         return f"AutoEncoder(d_in={self.cfg.d_in}, dict_mult={self.cfg.dict_mult})"
