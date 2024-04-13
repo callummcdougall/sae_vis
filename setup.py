@@ -5,18 +5,17 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name = 'sae-vis',
-    version = '0.2.12',
+    version = '0.2.13',
     packages = find_packages(),
     install_requires = [
         'torch',
         'einops',
-        'eindex-callum @ git+https://github.com/callummcdougall/eindex.git',
+        'eindex-callum',
         'rich',
         'transformer_lens',
         'datasets',
         'dataclasses-json',
         'jaxtyping',
-        'sae-lens',
         'pytest',
     ],
     include_package_data = True,

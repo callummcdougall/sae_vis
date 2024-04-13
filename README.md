@@ -34,3 +34,4 @@ In the demo Colab, we show the two different types of vis which are supported by
 * `0.2.10` - fix some anomalous characters
 * `0.2.11` - update PyPI with longer description
 * `0.2.12` - fix height parameter of config, add videos to PyPI description
+* `0.2.13` - add to dependencies, and fix SAELens section
