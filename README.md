@@ -35,3 +35,5 @@ In the demo Colab, we show the two different types of vis which are supported by
 * `0.2.11` - update PyPI with longer description
 * `0.2.12` - fix height parameter of config, add videos to PyPI description
 * `0.2.13` - add to dependencies, and fix SAELens section
+* `0.2.14` - fix mistake in dependencies
+* `0.2.15` - refactor to support eventual scatterplot-based feature browser, fix `&rsquo;` HTML

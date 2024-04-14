@@ -195,22 +195,36 @@ HTML_CHARS = {
 HTML_ANOMALIES = {
     "âĢĶ": "&mdash;",
     "âĢĵ": "&ndash;",
-    "âĢĻ": "&rsquo;",
     "âĢĭ": "&#8203;",
     "âĢľ": "&ldquo;",
     "âĢĿ": "&rdquo;",
     "âĢĺ": "&lsquo;",
     "âĢĻ": "&rsquo;",
-    # "âĢĭ": " ", # TODO: this is actually zero width space character. what's the best way to represent it?
     "Ġ": "&nbsp;",
     "Ċ": "&bsol;n",
     "ĉ": "&bsol;t",
+}
+HTML_ANOMALIES_REVERSED = {
+    "&mdash": "—",
+    "&ndash": "–",
+    # "&#8203": "​", # TODO: this is actually zero width space character. what's the best way to represent it?
+    "&ldquo": "“",
+    "&rdquo": "”",
+    "&lsquo": "‘",
+    "&rsquo": "’",
+    "&nbsp;": " ",
+    "&bsol;": "\\",
 }
 HTML_QUOTES = {
     "'": "&apos;",
     '"': "&quot;",
 }
 HTML_ALL = {**HTML_CHARS, **HTML_QUOTES, " ": "&nbsp;"}
+
+HTML_ALL_REVERSED = {
+    **{v: k for k, v in HTML_CHARS.items()},
+    **HTML_ANOMALIES_REVERSED,
+}
 
 def process_str_tok(str_tok: str, html: bool = True) -> str:
     '''
@@ -247,8 +261,8 @@ def unprocess_str_tok(str_tok: str) -> str:
     characters. This is useful when e.g. our string is inside a <code>...</code> element, because then we have to use
     the literal characters.
     '''
-    for k, v in HTML_ALL.items():
-        str_tok = str_tok.replace(v, k)
+    for k, v in HTML_ALL_REVERSED.items():
+        str_tok = str_tok.replace(k, v)
     
     return str_tok
 
@@ -440,32 +454,45 @@ ASYMMETRIC_RANGES_AND_PRECISIONS = [
 
 @dataclass_json
 @dataclass
-class QuantileCalculator:
+class FeatureStatistics:
     '''
-    This class is initialized with some float-type data, as well as a list of ranges and precisions. It will only keep
-    the data which is necessary to calculate the quantile of additional data to the required precision, but no more.
+    This object (which used to be called QuantileCalculator) stores stats about a dataset.
 
-    This was created because (for example) when looking at the top-activating features, we care way more about precision
-    if the feature's activation is in the top 1% of its activations over all other data it's been analyzed on.
+    The quantiles are a bit complicated because we store a higher precision for values closer to 100%. Most of the 
+    other stats are pretty straightforward.
 
-    Note, this class works in parallel, i.e. it can handle multiple different sets of data at once. The data is expected
-    in 2D tensor format, with the first dimension being the batch dim, i.e. each row is a different dataset which we
-    want to be able to compute quantiles from.
+    We create these objects using the `create` method. We assume data supplid is 2D, where each row is a different
+    dataset that we want to compute the stats for.
     '''
-    quantiles: List[float] = field(default_factory=list)
+    # Stats: max, frac_nonzero, skew, kurtosis
+    max: List[float] = field(default_factory=list)
+    frac_nonzero: List[float] = field(default_factory=list)
+    skew: List[float] = field(default_factory=list)
+    kurtosis: List[float] = field(default_factory=list)
+
+    # Quantile data
     quantile_data: List[List[float]] = field(default_factory=list)
+    quantiles: List[float] = field(default_factory=list)
     ranges_and_precisions: list = field(default_factory=lambda: ASYMMETRIC_RANGES_AND_PRECISIONS)
 
+    @property
+    def aggdata(
+        self,
+        precision: int = 5,
+    ) -> Dict[str, List[float]]:
+        return {
+            "max": [round(x, precision) for x in self.max],
+            "frac_nonzero": [round(x, precision) for x in self.frac_nonzero],
+            "skew": [round(x, precision) for x in self.skew],
+            "kurtosis": [round(x, precision) for x in self.kurtosis],
+        }
+
     @classmethod
-    def from_data(
+    def create(
         cls,
         data: Optional[Float[Tensor, "batch data"]] = None,
         ranges_and_precisions: list = ASYMMETRIC_RANGES_AND_PRECISIONS,
-    ) -> "QuantileCalculator":
-        '''
-        Returns a QuantileCalculator object, from data. This method is different from the __init__ method, because the
-        __init__ method has to be compatible with the way dataclasses are loaded from JSON.
-        '''
+    ) -> "FeatureStatistics":
         # Generate quantiles from the ranges_and_precisions list
         quantiles = []
         for r, p in ranges_and_precisions:
@@ -474,11 +501,17 @@ class QuantileCalculator:
             quantiles.extend(np.arange(start, end - 0.5 * step, step))
 
         # If data is None, then set the quantiles and quantile_data to None, and return
+        skew = []
+        kurtosis = []
         if data is None:
+            _max = []
+            frac_nonzero = []
             quantiles = []
             quantile_data = []
-        # Else, get the actual quantile values (which we'll use to calculate the quantiles of any new data)
+        # Else, get the actual stats & quantile values (which we'll use to calculate the quantiles of any new data)
         else:
+            _max = data.max(dim=-1).values.tolist()
+            frac_nonzero = (data.abs() > 1e-6).float().mean(dim=-1).tolist()
             quantiles_tensor = torch.tensor(quantiles, dtype=data.dtype).to(data.device)
             quantile_data = torch.quantile(data, quantiles_tensor, dim=-1).T.tolist()
 
@@ -491,19 +524,32 @@ class QuantileCalculator:
             first_nonzero = next((i for i, x in enumerate(qd) if abs(x) > 1e-6), len(qd))
             quantile_data[i] = qd[first_nonzero:]
 
-        return cls(quantiles, quantile_data, ranges_and_precisions)
+        
+        return cls(
+            max=_max,
+            frac_nonzero=frac_nonzero,
+            skew=skew,
+            kurtosis=kurtosis,
+            quantile_data=quantile_data,
+            quantiles=quantiles,
+            ranges_and_precisions=ranges_and_precisions
+        )
 
 
-    def update(self, other: "QuantileCalculator"):
+    def update(self, other: "FeatureStatistics"):
         '''
-        Merges two QuantileCalculator objects together (changing self inplace). This is useful when we're batching our
+        Merges two FeatureStatistics objects together (changing self inplace). This is useful when we're batching our
         calculations over different groups of features, and we want to merge them together at the end.
 
         Note, we also deal with the special case where self has no data.
         '''
         assert self.ranges_and_precisions == other.ranges_and_precisions,\
-            "Error: can't merge two QuantileCalculator objects with different ranges."
+            "Error: can't merge two FeatureStatistics objects with different ranges."
         
+        self.max.extend(other.max)
+        self.frac_nonzero.extend(other.frac_nonzero)
+        self.skew.extend(other.skew)
+        self.kurtosis.extend(other.kurtosis)
         self.quantiles.extend(other.quantiles)
         self.quantile_data.extend(other.quantile_data)
 
@@ -566,11 +612,11 @@ class QuantileCalculator:
 # Example usage
 if MAIN:
     # 2D data: each row represents the activations data of a different feature. We set some of it to zero, so we can
-    # test the "JSON doesn't store zeros" feature of the QuantileCalculator class.
+    # test the "JSON doesn't store zeros" feature of the FeatureStatistics class.
     device = get_device()
     N = 100_000
     data = torch.stack([torch.rand(N).masked_fill(torch.rand(N) < 0.5, 0.0), torch.rand(N)]).to(device)
-    qc = QuantileCalculator.from_data(data)
+    qc = FeatureStatistics.create(data)
     print(f"Total datapoints stored = {sum(len(x) for x in qc.quantile_data):_}")
     print(f"Total datapoints used to compute quantiles = {data.numel():_}\n")
 
@@ -734,8 +780,44 @@ if MAIN:
 # %%
 
 
+# class RollingStats:
+#     '''
+#     This class helps us compute rolling stats of a dataset as we feed in activations, without ever having to store the
+#     entire batch in data.
+#     '''
+#     def __init__(self): 
+#         self.n = 0
+#         self.x_sum = 0.0
+#         self.x2_sum = 0.0
+#         self.x3_sum = 0.0
+#         self.x4_sum = 0.0
+#         self.frac_nonzero = 0.0
+#         self.max = 0.0
 
-class BatchedCorrCoef:
+#     def update(self, x: Tensor):
+#         x_frac_nonzero = x.nonzero().size(0) / x.numel()
+#         x_n = x.numel()
+#         self.frac_nonzero = (self.n * self.frac_nonzero + x_n * x_frac_nonzero) / (self.n + x_n)
+#         self.n += x.numel()
+#         self.x_sum += x.sum().item()
+#         self.x2_sum += x.pow(2).sum().item()
+#         self.x3_sum += x.pow(3).sum().item()
+#         self.x4_sum += x.pow(4).sum().item()
+#         self.max = max(self.max, x.max().item())
+
+#     @property
+#     def skew(self) -> float:
+#         raise NotImplementedError
+    
+#     @property
+#     def kurtosis(self) -> float:
+#         raise NotImplementedError
+
+
+
+
+
+class RollingCorrCoef:
     '''
     This class helps compute corrcoef (Pearson & cosine sim) between 2 batches of vectors, without having to store the
     entire batch in memory. 
@@ -749,49 +831,76 @@ class BatchedCorrCoef:
             num = n * xy_sum - x_sum * y_sum
             denom = (n * x2_sum - x_sum ** 2) ** 0.5 * (n * y2_sum - y_sum ** 2) ** 0.5
 
-    This class batches this computation, i.e. x.shape = (X, N), y.shape = (Y, N), where:
+    This class batches this computation, i.e. x.shape = (X, N), y.shape = (Y, N), where (for example) we have:
         N = batch_size * seq_len, i.e. it's the number of datapoints we have
         x = features of our original encoder
-        y = features of our encoder-B, or neurons of our original model
+        y = features of our encoder-B, or neurons of our original model (the thing we're topk-ing over)
 
     So we can e.g. compute the correlation coefficients for every combination of feature in encoder and model neurons,
     then take topk to find the most correlated neurons for each feature.
     '''
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        indices: list[int] | None = None,
+        with_self: bool = False,
+    ) -> None:
+        '''
+        Args:
+            indices: list[int]
+                If supplied, we map y indices (from 0 to y.shape) to these values. Useful when we're working with e.g.
+                a dataset which didn't start from 0, and we want the "true indices".
+            with_self: bool
+                If True, then we take X and Y as coming from the same dataset. This saves us some computation, and it
+                also means we exclude the diagonal from final topk (since correlation with self is always 1).
+        '''
         self.n = 0
+        self.X = None
+        self.Y = None
+        self.indices = indices
+        self.with_self = with_self
 
     def update(self, x: Float[Tensor, "X N"], y: Float[Tensor, "Y N"]) -> None:
+
+        # Get values of x and y, and check for consistency with each other & with previous values
         assert x.ndim == 2 and y.ndim == 2, "Both x and y should be 2D"
-        assert x.shape[-1] == y.shape[-1], "x and y should have the same size in the last dimension"
+        X, Nx = x.shape
+        Y, Ny = y.shape
+        assert Nx == Ny, "Error: x and y should have the same size in the last dimension"
+        if self.with_self: assert X == Y, "If with_self is True, then x and y should be the same shape"
+        if self.X is not None: assert X == self.X, "Error: updating a corrcoef object with different sized dataset."
+        if self.Y is not None: assert Y == self.Y, "Error: updating a corrcoef object with different sized dataset."
+        self.X = X
+        self.Y = Y
 
         # If this is the first update step, then we need to initialise the sums
         if self.n == 0:
-            self.x_sum = torch.zeros(x.shape[0], device=x.device)
-            self.y_sum = torch.zeros(y.shape[0], device=y.device)
-            self.xy_sum = torch.zeros(x.shape[0], y.shape[0], device=x.device)
-            self.x2_sum = torch.zeros(x.shape[0], device=x.device)
-            self.y2_sum = torch.zeros(y.shape[0], device=y.device)
+            self.x_sum = torch.zeros(X, device=x.device)
+            self.xy_sum = torch.zeros(X, Y, device=x.device)
+            self.x2_sum = torch.zeros(X, device=x.device)
+            if not self.with_self:
+                self.y_sum = torch.zeros(Y, device=y.device)
+                self.y2_sum = torch.zeros(Y, device=y.device)
         
         # Next, update the sums
         self.n += x.shape[-1]
         self.x_sum += einops.reduce(x, "X N -> X", "sum")
-        self.y_sum += einops.reduce(y, "Y N -> Y", "sum")
         self.xy_sum += einops.einsum(x, y, "X N, Y N -> X Y")
         self.x2_sum += einops.reduce(x ** 2, "X N -> X", "sum")
-        self.y2_sum += einops.reduce(y ** 2, "Y N -> Y", "sum")
+        if not self.with_self:
+            self.y_sum += einops.reduce(y, "Y N -> Y", "sum")
+            self.y2_sum += einops.reduce(y ** 2, "Y N -> Y", "sum")
 
     def corrcoef(
         self,
-        exclude_diag: bool = False,
     ) -> Tuple[Float[Tensor, "X Y"], Float[Tensor, "X Y"]]:
         '''
         Computes the correlation coefficients between x and y, using the formulae given in the class docstring.
-
-        Args:
-            exclude_diag: bool
-                If True, we assume X and Y are the same dataset, and we don't include the diagonal in the topk (since
-                correlation with self is always 1, this is not interesting).
         '''
+        # Get y_sum and y2_sum (to deal with the cases when with_self is True/False)
+        if self.with_self:
+            self.y_sum = self.x_sum
+            self.y2_sum = self.x2_sum
+
         # Compute cosine sim
         cossim_numer = self.xy_sum
         cossim_denom = torch.sqrt(torch.outer(self.x2_sum, self.y2_sum)) + 1e-6
@@ -802,10 +911,9 @@ class BatchedCorrCoef:
         pearson_denom = torch.sqrt(torch.outer(self.n * self.x2_sum - self.x_sum ** 2, self.n * self.y2_sum - self.y_sum ** 2)) + 1e-6
         pearson = pearson_numer / pearson_denom
 
-        # Exclude the diagonal if necessary (check datasets are the same shape first)
-        if exclude_diag:
+        # If with_self, we exclude the diagonal
+        if self.with_self:
             d = cossim.shape[0]
-            assert tuple(cossim.shape) == tuple(pearson.shape) == (d, d), "X and Y should be the same dataset"
             cossim[range(d), range(d)] = 0.0
             pearson[range(d), range(d)] = 0.0
 
@@ -815,7 +923,6 @@ class BatchedCorrCoef:
         self,
         k: int,
         largest: bool = True,
-        exclude_diag: bool = False,
     ) -> Tuple[list[list[int]], list[list[float]], list[list[float]]]:
         '''
         Takes topk of the pearson corrcoefs over the y-dimension (e.g. giving us the most correlated neurons or most
@@ -826,9 +933,6 @@ class BatchedCorrCoef:
                 Number of top indices to take (usually 3, for the left-hand tables)
             largest: bool
                 If True, then we take the largest k indices. If False, then we take the smallest k indices.
-            exclude_diag: bool
-                If True, we assume X and Y are the same dataset, and we don't include the diagonal in the topk (since
-                correlation with self is always 1, this is not interesting).
 
         Returns:
             pearson_indices: list[list[int]]
@@ -839,15 +943,20 @@ class BatchedCorrCoef:
                 Values of cosine similarity for each of the topk indices
         '''
         # Get correlation coefficient, using the formula from corrcoef method
-        pearson, cossim = self.corrcoef(exclude_diag=exclude_diag)
+        pearson, cossim = self.corrcoef()
 
         # Get the top pearson values
         pearson_topk = TopK(tensor=pearson, k=k, largest=largest) # shape (X, k)
 
         # Get the cossim values for the top pearson values, i.e. cossim_values[X, k] = cossim[X, pearson_indices[X, k]]
         cossim_values = eindex(cossim, pearson_topk.indices, "X [X k]")
+
+        # If we've supplied indices, use them to offset the returned pearson topk indices
+        indices = pearson_topk.indices.tolist()
+        if self.indices is not None:
+            indices = [[self.indices[i] for i in x] for x in indices]
         
-        return pearson_topk.indices.tolist(), pearson_topk.values.tolist(), cossim_values.tolist()
+        return indices, pearson_topk.values.tolist(), cossim_values.tolist()
 
 
 @dataclass_json

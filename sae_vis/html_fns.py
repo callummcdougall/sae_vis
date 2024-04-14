@@ -60,16 +60,25 @@ class HTML:
             (wrapping each column's contents in a `grid-item` div), and wrap everything in a `grid-container`.
 
         js_data:
-            Keys are names like `tokenData`, `featureTablesData`, etc. Each name has a corresponding JavaScript file
-            like `tokenScript.js`, `featureTablesScript.js`, etc, and those scripts will use `DATA.tokenData`. So the
-            `js_data` object is a standin for this `DATA` dict. When we `__add__` 2 objects together, we merge the
-            dicts. When we call `get_html`, all the scripts will be wrapped in a JavaScript function `load` which has
-            a single argument `DATA`, and we'll handle the data by:
-                
-                - Loading in DATA, either as a direct `DATA = {json.dumps(...)}` or using `fetch`
+            Structure of this dict (for feature-centric vis) is:
+                'AGGDATA'
+                    (all the statistical data across all features)
+                'DASHBOARD_DATA'
+                    '0'
+                        tokenData
+                            (data to generate the sequence groups, which will be fed into `tokenScript.js` as
+                            `DATA.tokenData`)
+                        featureTablesData
+                            (data to generate the feature tables, which will be fed into `featureTablesScript.js` as 
+                            `DATA.featureTablesData`)
+                        ...
+                    '1'
+                        tokenData
+                        ...
 
-                - Calling `load`, either on DOMContentLoaded & with `DATA` argument if `js_data_index=False`, or on
-                  slider change & with slider value as argument if `js_data_index=True`
+            where the indices 0, 1, ... are the feature indices. For prompt-centric vis, it's the same except that the
+            0, 1 ... feature indices keys are actually '|'-separated options for the dropdowns, looking like
+            "act_quantile|'first' (6)".
 
     This is the object returned by each of the `_get_html_data` methods in the classes in `data_storing_fns.py`. It
     helps standardize the way we create & add to our final HTML vis.
@@ -102,7 +111,7 @@ class HTML:
         for k, v in other.html_data.items():
             html_data[k] = html_data.get(k, "") + v
 
-        # Merge JavaScript data by taking union over data dicts for every different file
+        # Merge JavaScript data by taking union over data dicts
         js_data = deep_union(self.js_data, other.js_data)
 
         return HTML(html_data, js_data)
@@ -141,6 +150,7 @@ class HTML:
         if isinstance(filename, str): filename = Path(filename)
         assert filename.suffix == ".html", f"Expected {filename.resolve()!r} to have .html suffix"
         assert filename.parent.exists(), f"Expected {filename.parent.resolve()!r} to exist"
+        assert self.js_data.keys() == {"AGGDATA", "DASHBOARD_DATA"}
 
         # ! JavaScript
 
@@ -153,23 +163,23 @@ class HTML:
         # in HTML. We create this by concatenating all files referred to in the keys of the `DATA[key]` object, since
         # its keys are just JS filenames with the `Script.js` suffix removed. Lastly, note that we put the histograms
         # scripts first, because hovering over tokens might require a relayout on a histogram, so it needs to exist!
-        js_data_filenames = next(iter(self.js_data.values())).keys()
+        js_data_filenames = next(iter(self.js_data["DASHBOARD_DATA"].values())).keys()
         js_data_filenames = [name.replace("Data", "Script.js") for name in js_data_filenames]
         js_data_filenames = sorted(js_data_filenames, key=lambda x: "histograms" not in x.lower())
         js_create_vis = "\n".join([(js_path / js_name).read_text() for js_name in js_data_filenames])
         
         # Read in the code which will dynamically create dropdowns from the DATA keys
-        js_create_dropdowns = (js_path / "_createDropdownsScript.js").read_text()
-        
+        js_create_dropdowns = (js_path / "_setupPageScript.js").read_text()
+
         # Put everything together, in the correct order (including defining DATA & creating dropdowns from it, which
         # is done in DOMContentLoaded). Note, double curly braces are used to escape single curly braces in f-strings.
         js_str = f"""
 document.addEventListener("DOMContentLoaded", function(event) {{
     const ALL_DATA = defineData();
-    createDropdowns(ALL_DATA);
+    setupPage(ALL_DATA['DASHBOARD_DATA'], ALL_DATA['AGGDATA']);
 }});
 
-function createDropdowns(DATA) {{
+function setupPage(DASHBOARD_DATA, AGGDATA) {{
     // Dynamically creates dropdowns from the data (by parsing its keys), and causes `createVis` to be called whenever
     // the dropdowns change. This includes the initial call to `createVis` with the first key, which is START_KEY.
 
@@ -179,19 +189,16 @@ function createDropdowns(DATA) {{
 
 function createVis(DATA) {{
     // Create the vis from the data (this is where all the JavaScript files in this repo get dumped into). The DATA
-    // object here will be ALL_DATA[key] for some key (the key will be a feature index in the feature-centric vis, and
-    // it'll be something like "act_quantile|'first' (6)" in the prompt-centric vis).
+    // object here will be DASHBOARD_DATA["8"] in the feature-centric vis, or DASHBOARD_DATA["act_quantile|'first' (6)"]
+    // in the prompt-centric vis).
 
     {apply_indent(js_create_vis, " " * 4)}
 }}
 
 function defineData() {{
-    // Load in ALL_DATA, which is a nested dictionary: keys are "|"-separated options for the dropdowns, and values are
-    // dictionaries {{"tokenData": ..., "featureTablesData: ...}}. See the correspondingly named JavaScript files to
-    // understand how this data is used (within the `createVis` function).
+    // Returns the data - see the docstring of the Python HTML class to understand the structure of this object.
 
-    const ALL_DATA = {json.dumps(self.js_data)};
-    return ALL_DATA;
+    return {json.dumps(self.js_data)};
 }}
 """
                 

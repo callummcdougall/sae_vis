@@ -78,7 +78,7 @@ function setupLogitsHistogram(histId, histData) {
     }
 }
 
-// 'logitsHistogramData' is a dictionary mapping suffixes to histogram data (to make each histogram unique)
+// 'DATA.ogitsHistogramData' is a dictionary mapping suffixes to histogram data (to make each histogram unique)
 // We iterate over it, and create a histogram for each one
 Object.entries(DATA.logitsHistogramData).forEach(([suffix, histData]) => {
     var t0 = performance.now();

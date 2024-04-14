@@ -20,7 +20,7 @@ from sae_vis.model_fns import (
 
 from sae_vis.utils_fns import (
     to_str_tokens,
-    QuantileCalculator,
+    FeatureStatistics,
     HistogramData,
     unprocess_str_tok,
     get_decode_html_safe_fn,
@@ -272,7 +272,7 @@ class LogitsTableData:
         for i in range(len(neg_str)):
             data["negLogits"].append({
                 "symbol": unprocess_str_tok(neg_str[i]),
-                "value": round(top_logits[i], 2),
+                "value": round(bottom_logits[i], 2),
                 "color": f"rgba(255,{int(255*(1-neg_bg_values[i]))},{int(255*(1-neg_bg_values[i]))},0.5)"
             })
             data["posLogits"].append({
@@ -362,8 +362,8 @@ class SequenceData:
         '''
         assert isinstance(cfg, (PromptConfig, SequencesConfig)), f"Invalid config type: {type(cfg)}"
         seq_group_id = component_specific_kwargs.get("seq_group_id", None)
-        max_act_color = component_specific_kwargs.get("max_act_color", None)
-        max_loss_color = component_specific_kwargs.get("max_loss_color", None)
+        max_feat_act = component_specific_kwargs.get("max_feat_act", None)
+        max_loss_contribution = component_specific_kwargs.get("max_loss_contribution", None)
         bold_idx = component_specific_kwargs.get("bold_idx", None)
         permanent_line = component_specific_kwargs.get("permanent_line", False)
         first_in_group = component_specific_kwargs.get("first_in_group", True)
@@ -394,8 +394,8 @@ class SequenceData:
             neg_val = deepcopy(self.bottom_logits)
 
         # Get values for converting into colors later
-        bg_denom = max_or_1(self.feat_acts) if (max_act_color is None) else max_act_color
-        u_denom = max_or_1(self.loss_contribution, abs=True) if (max_loss_color is None) else max_loss_color
+        bg_denom = max_feat_act or max_or_1(self.feat_acts)
+        u_denom = max_loss_contribution or max_or_1(self.loss_contribution, abs=True)
         bg_values = (np.maximum(feat_acts, 0.0) / max(1e-4, bg_denom)).tolist()
         u_values = (np.array(loss_contribution) / max(1e-4, u_denom)).tolist()
 
@@ -516,6 +516,16 @@ class SequenceGroupData:
     def __len__(self) -> int:
         return len(self.seq_data)
     
+    @property
+    def max_feat_act(self) -> float:
+        '''Returns maximum value of feature activation over all sequences in this group.'''
+        return max_or_1([act for seq in self.seq_data for act in seq.feat_acts])
+    
+    @property
+    def max_loss_contribution(self) -> float:
+        '''Returns maximum value of loss contribution over all sequences in this group.'''
+        return max_or_1([loss for seq in self.seq_data for loss in seq.loss_contribution], abs=True)
+    
     def _get_html_data(
         self,
         cfg: SequencesConfig,
@@ -537,7 +547,7 @@ class SequenceGroupData:
             bold_idx:       If supplied, then we bold the token at this index. Default is the middle token. Note, this
                             argument is only allowed if the sequence group contains just one sequence.
             group_size:     Max size of sequences in the group (i.e. we truncate after this many, if argument supplied).
-            max_act_color:  If supplied, then we use this as the most extreme value (for coloring by feature act).
+            max_feat_act:  If supplied, then we use this as the most extreme value (for coloring by feature act).
             permanent_line: If True, the bolded token for first seq in group will have a permanent line on histograms.
             seq_group_id:   The id of the sequence group div. This will usually be passed as e.g. "seq-group-001".
             column:         The index of this column. Note that it can be a tuple, if our SequenceMultiGroupData object
@@ -548,8 +558,8 @@ class SequenceGroupData:
         '''
         seq_group_id = component_specific_kwargs.get("seq_group_id", None)
         group_size = component_specific_kwargs.get("group_size", None)
-        max_act_color = component_specific_kwargs.get("max_act_color", None)
-        max_loss_color = component_specific_kwargs.get("max_loss_color", None)
+        max_feat_act = component_specific_kwargs.get("max_feat_act", self.max_feat_act)
+        max_loss_contribution = component_specific_kwargs.get("max_loss_contribution", self.max_loss_contribution)
 
         # Get the data that will go into the div (list of list of dicts, i.e. containing all data for seqs in group). We
         # start with the title.
@@ -559,10 +569,6 @@ class SequenceGroupData:
         # after the column
         if seq_group_id is None: seq_group_id = f"seq-group-{column:03d}"
 
-        # If max_act_color not supplied, use the max over all sequences in this group. Same for loss color
-        if max_act_color is None: max_act_color = max_or_1([act for seq in self.seq_data for act in seq.feat_acts])
-        if max_loss_color is None: max_loss_color = max_or_1([loss for seq in self.seq_data for loss in seq.loss_contribution], abs=True)
-        
         # Accumulate the HTML data for each sequence in this group
         for i, seq in enumerate(self.seq_data[:group_size]):
             html_obj += seq._get_html_data(
@@ -574,8 +580,8 @@ class SequenceGroupData:
                 component_specific_kwargs = dict(
                     bold_idx = cfg.buffer[0],
                     permanent_line = False, # in a group, we're never showing a permanent line (only for single seqs)
-                    max_act_color = max_act_color,
-                    max_loss_color = max_loss_color,
+                    max_feat_act = max_feat_act,
+                    max_loss_contribution = max_loss_contribution,
                     seq_group_id = seq_group_id,
                     first_in_group = (i == 0),
                     title = self.title,
@@ -599,6 +605,16 @@ class SequenceMultiGroupData:
 
     def __getitem__(self, idx: int) -> SequenceGroupData:
         return self.seq_group_data[idx]
+    
+    @property
+    def max_feat_act(self) -> float:
+        '''Returns maximum value of feature activation over all sequences in this group.'''
+        return max_or_1([seq_group.max_feat_act for seq_group in self.seq_group_data])
+    
+    @property
+    def max_loss_contribution(self) -> float:
+        '''Returns maximum value of loss contribution over all sequences in this group.'''
+        return max_or_1([seq_group.max_loss_contribution for seq_group in self.seq_group_data])
 
     def _get_html_data(
         self,
@@ -610,6 +626,11 @@ class SequenceMultiGroupData:
     ) -> HTML:
         '''
         Args:
+            decode_fn:                  Mapping from token IDs to string tokens.
+            id_suffix:                  The suffix for the ID of the div containing the sequences.
+            column:                     The index of this column. Note that this will be an int, but we might end up
+                                        turning it into a tuple if we overflow into a new column.
+            component_specific_kwargs:  Contains any specific kwargs that could be used to customize this component.
 
         Returns:
             html_obj:  Object containing the HTML and JavaScript data for these multiple seq groups.
@@ -617,12 +638,8 @@ class SequenceMultiGroupData:
         assert isinstance(column, int)
 
         # Get max activation value & max loss contributions, over all sequences in all groups
-        max_act_color = max_or_1([
-            act for group in self.seq_group_data for seq in group.seq_data for act in seq.feat_acts
-        ])
-        max_loss_color = max_or_1([
-            loss for group in self.seq_group_data for seq in group.seq_data for loss in seq.loss_contribution
-        ], abs=True)
+        max_feat_act = component_specific_kwargs.get("max_feat_act", self.max_feat_act)
+        max_loss_contribution = component_specific_kwargs.get("max_loss_contribution", self.max_loss_contribution)
 
         # Get the correct column indices for the sequence groups, depending on how group_wrap is configured. Note, we 
         # deal with overflowing columns by extending the dictionary, i.e. our column argument isn't just `column`, but
@@ -641,7 +658,7 @@ class SequenceMultiGroupData:
                 # Here, we stack groups into columns as [1, 3, 3, ...]
                 cols = [(column, 0), *[(column, 1 + int(i/3)) for i in range(n_quantile_groups)]]
             case _:
-                raise ValueError(f"Invalid stack_mode: {cfg.stack_mode}. Expected in 'stack-x' for x='all', 'quantiles', 'none'")
+                raise ValueError(f"Invalid stack_mode: {cfg.stack_mode}. Expected in 'stack-{{all,quantiles,none}}'.")
 
         # Create the HTML object, and add all the sequence groups to it, possibly across different columns
         html_obj = HTML()
@@ -653,8 +670,8 @@ class SequenceMultiGroupData:
                 column = col,
                 component_specific_kwargs = dict(
                     group_size = group_size,
-                    max_act_color = max_act_color,
-                    max_loss_color = max_loss_color,
+                    max_feat_act = max_feat_act,
+                    max_loss_contribution = max_loss_contribution,
                     seq_group_id = f"seq-group-{column}-{i}", # we label our sequence groups with (index, column)
                 )
             )
@@ -794,6 +811,10 @@ class FeatureData:
             assert (layout.seq_cfg.n_quantiles == 0) or (layout.seq_cfg.stack_mode == "stack-all"),\
             "prompt_centric_layout should have stack_mode='stack-all' if n_quantiles > 0, so that it fits in 1 col"
 
+        # Get the maximum color over both the prompt and the sequences
+        max_feat_act = max(max(self.prompt_data.feat_acts), self.sequence_data.max_feat_act)
+        max_loss_contribution = max(max(self.prompt_data.loss_contribution), self.sequence_data.max_loss_contribution)
+
         # For every component in the single column of this prompt-centric layout, add all the components in that column
         for component_config in layout.columns[0]:
 
@@ -804,10 +825,12 @@ class FeatureData:
                 decode_fn = decode_fn,
                 column = column_idx,
                 id_suffix = str(column_idx),
-                component_specific_kwargs = dict(  # only used for the SequenceData (the prompt)
+                component_specific_kwargs = dict(  # only used by SequenceData (the prompt)
                     bold_idx = bold_idx,
                     permanent_line = True,
                     hover_above = True,
+                    max_feat_act = max_feat_act,
+                    max_loss_contribution = max_loss_contribution,
                 ),
             )
         
@@ -826,7 +849,7 @@ class _SaeVisData:
     serializable, only saving the raw data.
     '''
     feature_data_dict: dict[int, FeatureData] = field(default_factory=dict)
-    feature_act_quantiles: QuantileCalculator = field(default_factory=QuantileCalculator)
+    feature_stats: FeatureStatistics = field(default_factory=FeatureStatistics)
 
     @classmethod
     def from_dict(cls, data: dict) -> '_SaeVisData':
@@ -847,16 +870,16 @@ class SaeVisData:
         https://github.com/callummcdougall/sae_vis#data_storing_fnspy
 
     Args: 
-        feature_data_dict:      Contains the data for each individual feature-centric vis.
-        feature_act_quantiles:  Contains the quantiles of activation values for each feature (used for rank-ordering
-                                features in the prompt-centric vis).
-        cfg:                    The vis config, used for the both the data gathering and the vis layout.
-        model:                  The model which our encoder was trained on.
-        encoder:                The encoder used to get the feature activations.
-        encoder_B:              The encoder used to get the feature activations for the second model (if applicable).
+        feature_data_dict:  Contains the data for each individual feature-centric vis.
+        feature_stats:      Contains the stats over all features (including the quantiles of activation values for each
+                            feature (used for rank-ordering features in the prompt-centric vis).
+        cfg:                The vis config, used for the both the data gathering and the vis layout.
+        model:              The model which our encoder was trained on.
+        encoder:            The encoder used to get the feature activations.
+        encoder_B:          The encoder used to get the feature activations for the second model (if applicable).
     '''
     feature_data_dict: dict[int, FeatureData] = field(default_factory=dict)
-    feature_act_quantiles: QuantileCalculator = field(default_factory=QuantileCalculator)
+    feature_stats: FeatureStatistics = field(default_factory=FeatureStatistics)
     cfg: SaeVisConfig = field(default_factory=SaeVisConfig)
 
     model: Optional[HookedTransformer] = None
@@ -871,7 +894,7 @@ class SaeVisData:
         '''
         if other is None: return
         self.feature_data_dict.update(other.feature_data_dict)
-        self.feature_act_quantiles.update(other.feature_act_quantiles)
+        self.feature_stats.update(other.feature_stats)
 
 
     @classmethod
@@ -934,18 +957,23 @@ class SaeVisData:
         assert self.model is not None
         decode_fn = get_decode_html_safe_fn(self.model.tokenizer)
 
-        # For each FeatureData object, we get the html_obj for it's feature-centric vis, and merge it with HTML_OBJ
+        # Create iterator
         iterator = list(self.feature_data_dict.items())
         if self.cfg.verbose: iterator = tqdm(iterator, desc="Saving feature-centric vis")
 
+        # For each FeatureData object, we get the html_obj for its feature-centric vis, and merge it with HTML_OBJ
+        # (we arbitarily set the HTML string to be the HTML string for the first feature's view; they're all the same)
         for feature, feature_data in iterator:
-
-            # Get the HTML object for a single-feature view
             html_obj = feature_data._get_html_data_feature_centric(self.cfg.feature_centric_layout, decode_fn)
-
-            # Add the JavaScript, and arbitrarily set html_str to be the first feature's html_str (they're all same!)
             HTML_OBJ.js_data[str(feature)] = deepcopy(html_obj.js_data)
-            if feature == first_feature: HTML_OBJ.html_data = deepcopy(html_obj.html_data)
+            if feature == first_feature:
+                HTML_OBJ.html_data = deepcopy(html_obj.html_data)
+
+        # Add the aggdata
+        HTML_OBJ.js_data = {
+            "AGGDATA": self.feature_stats.aggdata,
+            "DASHBOARD_DATA": HTML_OBJ.js_data,
+        }
         
         # Save our full HTML
         HTML_OBJ.get_html(
@@ -1032,8 +1060,16 @@ class SaeVisData:
                 HTML_OBJ.html_data = deepcopy(html_obj.html_data)
         
         # Check our first key is in the scores_dict (if not, we should pick a different key)
-        assert first_key in scores_dict, f"Key {first_key} not found in {scores_dict.keys()=}. Have you tried \
-computing your initial data with more features and/or tokens, to make sure you have enough positive examples?"
+        assert first_key in scores_dict, "\n".join([
+            f"Key {first_key} not found in {scores_dict.keys()=}.",
+            "This means that there are no features with a nontrivial score for this choice of key & metric."
+        ])
+
+        # Add the aggdata
+        HTML_OBJ.js_data = {
+            "AGGDATA": self.feature_stats.aggdata,
+            "DASHBOARD_DATA": HTML_OBJ.js_data,
+        }
 
         # Save our full HTML
         HTML_OBJ.get_html(
@@ -1052,7 +1088,7 @@ computing your initial data with more features and/or tokens, to make sure you h
 
         _self = _SaeVisData(
             feature_data_dict = self.feature_data_dict,
-            feature_act_quantiles = self.feature_act_quantiles,
+            feature_stats = self.feature_stats,
         )
 
         with open(filename, "w") as f:
@@ -1081,7 +1117,7 @@ computing your initial data with more features and/or tokens, to make sure you h
 
         self = SaeVisData(
             feature_data_dict = _self.feature_data_dict,
-            feature_act_quantiles = _self.feature_act_quantiles,
+            feature_stats = _self.feature_stats,
             cfg = cfg,
             model = model,
             encoder = encoder,

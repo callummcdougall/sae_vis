@@ -24,10 +24,11 @@ from sae_vis.model_fns import (
 from sae_vis.utils_fns import (
     k_largest_indices,
     random_range_indices,
-    QuantileCalculator,
+    FeatureStatistics,
     TopK,
     get_device,
-    BatchedCorrCoef,
+    RollingCorrCoef,
+    # RollingStats,
 )
 from sae_vis.data_storing_fns import (
     SequenceData,
@@ -57,9 +58,9 @@ def compute_feat_acts(
     feature_idx: list[int],
     encoder: AutoEncoder,
     encoder_B: Optional[AutoEncoder] = None,
-    corrcoef_neurons: Optional[BatchedCorrCoef] = None,
-    corrcoef_encoder: Optional[BatchedCorrCoef] = None,
-    corrcoef_encoder_B: Optional[BatchedCorrCoef] = None,
+    corrcoef_neurons: Optional[RollingCorrCoef] = None,
+    corrcoef_encoder: Optional[RollingCorrCoef] = None,
+    corrcoef_encoder_B: Optional[RollingCorrCoef] = None,
 ) -> Float[Tensor, "batch seq feats"]:
     '''
     This function computes the feature activations, given a bunch of model data. It also updates the rolling correlation
@@ -74,11 +75,11 @@ def compute_feat_acts(
             The encoder object, which we use to calculate the feature activations.
         encoder_B: Optional[AutoEncoder]
             The encoder-B object, which we use to calculate the feature activations.
-        corrcoef_neurons: Optional[BatchedCorrCoef]
+        corrcoef_neurons: Optional[RollingCorrCoef]
             The object storing the minimal data necessary to compute corrcoef between feature activations & neurons.
-        corrcoef_encoder: Optional[BatchedCorrCoef]
+        corrcoef_encoder: Optional[RollingCorrCoef]
             The object storing the minimal data necessary to compute corrcoef between pairwise feature activations.
-        corrcoef_encoder_B: Optional[BatchedCorrCoef]
+        corrcoef_encoder_B: Optional[RollingCorrCoef]
             The object storing minimal data to compute corrcoef between feature activations & encoder-B features.
     '''
     # Get the feature act direction by indexing encoder.W_enc, and the bias by indexing encoder.b_enc
@@ -132,9 +133,9 @@ def parse_feature_data(
     W_U: Float[Tensor, "d_model d_vocab"],
     cfg: SaeVisConfig,
     feature_out_dir: Optional[Float[Tensor, "feats d_out"]] = None,
-    corrcoef_neurons: Optional[BatchedCorrCoef] = None,
-    corrcoef_encoder: Optional[BatchedCorrCoef] = None,
-    corrcoef_encoder_B: Optional[BatchedCorrCoef] = None,
+    corrcoef_neurons: Optional[RollingCorrCoef] = None,
+    corrcoef_encoder: Optional[RollingCorrCoef] = None,
+    corrcoef_encoder_B: Optional[RollingCorrCoef] = None,
     progress: Optional[list[tqdm]] = None,
 ) -> tuple[SaeVisData, dict[str, float]]:
     """Convert generic activation data into a SaeVisData object, which can be used to create the feature-centric vis.
@@ -172,13 +173,13 @@ def parse_feature_data(
             feature_resid_dir if the SAE is in the residual stream (as we will assume if it not provided)
             For example, feature_out_dir = encoder.W_dec[feature_indices] # [feats d_autoencoder]
         
-        corrcoef_neurons: Optional[BatchedCorrCoef]
+        corrcoef_neurons: Optional[RollingCorrCoef]
             The object storing the minimal data necessary to compute corrcoef between feature activations & neurons.
         
-        corrcoef_encoder: Optional[BatchedCorrCoef]
+        corrcoef_encoder: Optional[RollingCorrCoef]
             The object storing the minimal data necessary to compute corrcoef between feature activations (pairwise).
 
-        corrcoef_encoder_B: Optional[BatchedCorrCoef]
+        corrcoef_encoder_B: Optional[RollingCorrCoef]
             The object storing minimal data to compute corrcoef between feature activations & encoder-B features.
 
         progress: Optional[list[tqdm]]
@@ -220,74 +221,60 @@ def parse_feature_data(
     assert isinstance(layout, SaeVisLayoutConfig),\
         f"Error: cfg.feature_centric_layout must be a SaeVisLayoutConfig object, got {type(layout)}"
 
-
     # ! Calculate all data for the left-hand column visualisations, i.e. the 3 tables
 
     if layout.feature_tables_cfg is not None and feature_out_dir is not None:
 
         # Store kwargs (makes it easier to turn the tables on and off individually)
-        feature_tables_data_kwargs = defaultdict(dict)
+        feature_tables_data = {}
 
         # Table 1: neuron alignment, based on decoder weights
         if layout.feature_tables_cfg.neuron_alignment_table:
             top3_neurons_aligned = TopK(tensor=feature_out_dir, k=layout.feature_tables_cfg.n_rows, largest=True)
             feature_out_l1_norm = feature_out_dir.abs().sum(dim=-1, keepdim=True)
             pct_of_l1: Arr = np.absolute(top3_neurons_aligned.values) / utils.to_numpy(feature_out_l1_norm)
-            for i in range(len(feature_indices)):
-                feature_tables_data_kwargs[i].update(
-                    neuron_alignment_indices = top3_neurons_aligned[i].indices.tolist(),
-                    neuron_alignment_values = top3_neurons_aligned[i].values.tolist(),
-                    neuron_alignment_l1 = pct_of_l1[i].tolist(),
-                )
+            feature_tables_data.update(
+                neuron_alignment_indices = top3_neurons_aligned.indices.tolist(),
+                neuron_alignment_values = top3_neurons_aligned.values.tolist(),
+                neuron_alignment_l1 = pct_of_l1.tolist(),
+            )
         
         # Table 2: neurons correlated with this feature, based on their activations
-        if layout.feature_tables_cfg.correlated_neurons_table:
-            assert isinstance(corrcoef_neurons, BatchedCorrCoef),\
-                f"Error: corrcoef_neurons should be of type BatchedCorrCoef, instead we got {type(corrcoef_neurons)}"
+        if isinstance(corrcoef_neurons, RollingCorrCoef):
             neuron_indices, neuron_pearson, neuron_cossim = corrcoef_neurons.topk_pearson(
-                k=layout.feature_tables_cfg.n_rows, exclude_diag=False,
+                k=layout.feature_tables_cfg.n_rows,
             )
-            for i in range(len(feature_indices)):
-                feature_tables_data_kwargs[i].update(
-                    correlated_neurons_indices = neuron_indices[i],
-                    correlated_neurons_pearson = neuron_pearson[i],
-                    correlated_neurons_cossim = neuron_cossim[i],
-                )
+            feature_tables_data.update(
+                correlated_neurons_indices = neuron_indices,
+                correlated_neurons_pearson = neuron_pearson,
+                correlated_neurons_cossim = neuron_cossim,
+            )
 
         # Table 3: primary encoder features correlated with this feature, based on their activations
-        if layout.feature_tables_cfg.correlated_features_table:
-            assert isinstance(corrcoef_encoder, BatchedCorrCoef),\
-                f"Error: corrcoef_encoder should be of type BatchedCorrCoef, instead we got {type(corrcoef_encoder)}"
+        if isinstance(corrcoef_encoder, RollingCorrCoef):
             enc_indices, enc_pearson, enc_cossim = corrcoef_encoder.topk_pearson(
-                k=layout.feature_tables_cfg.n_rows, exclude_diag=True,
+                k=layout.feature_tables_cfg.n_rows,
             )
-            for i in range(len(feature_indices)):
-                feature_tables_data_kwargs[i].update(
-                    correlated_features_indices = enc_indices[i],
-                    correlated_features_pearson = enc_pearson[i],
-                    correlated_features_cossim = enc_cossim[i],
-                )
+            feature_tables_data.update(
+                correlated_features_indices = enc_indices,
+                correlated_features_pearson = enc_pearson,
+                correlated_features_cossim = enc_cossim,
+            )
         
-        # Table 4: encoder-B features correlated with this feature, based on their activations. Note that we don't need
-        # to calculate this if we're not using encoder_B
-        if layout.feature_tables_cfg.correlated_b_features_table:
-            assert corrcoef_encoder_B is not None,\
-                f"Error: encoder_B is None, but you've set `correlated_b_features_table=True` in the layout."
-            assert isinstance(corrcoef_encoder_B, BatchedCorrCoef),\
-                f"Error: corrcoef_encoder_B should be of type BatchedCorrCoef, instead we got {type(corrcoef_encoder_B)}"
+        # Table 4: encoder-B features correlated with this feature, based on their activations
+        if isinstance(corrcoef_encoder_B, RollingCorrCoef):
             encB_indices, encB_pearson, encB_cossim = corrcoef_encoder_B.topk_pearson(
-                k=layout.feature_tables_cfg.n_rows, exclude_diag=False,
+                k=layout.feature_tables_cfg.n_rows,
             )
-            for i in range(len(feature_indices)):
-                feature_tables_data_kwargs[i].update(
-                    correlated_b_features_indices = encB_indices[i],
-                    correlated_b_features_pearson = encB_pearson[i],
-                    correlated_b_features_cossim = encB_cossim[i],
-                )
+            feature_tables_data.update(
+                correlated_b_features_indices = encB_indices,
+                correlated_b_features_pearson = encB_pearson,
+                correlated_b_features_cossim = encB_cossim,
+            )
                 
         # Add all this data to the list of FeatureTablesData objects
         for i, feat in enumerate(feature_indices):
-            feature_data_dict[feat].feature_tables_data = FeatureTablesData(**feature_tables_data_kwargs[i])
+            feature_data_dict[feat].feature_tables_data = FeatureTablesData(**{k: v[i] for k, v in feature_tables_data.items()})
 
     time_logs["(4) Getting data for tables"] = time.time() - t0
     t0 = time.time()
@@ -365,14 +352,14 @@ def parse_feature_data(
     t0 = time.time()
 
 
-    # ! Get the quantiles, which will be useful for the prompt-centric visualisation
-    feature_act_quantiles = QuantileCalculator.from_data(data=einops.rearrange(all_feat_acts, "b s feats -> feats (b s)"))
+    # ! Get stats (including quantiles, which will be useful for the prompt-centric visualisation)
+    feature_stats = FeatureStatistics.create(data=einops.rearrange(all_feat_acts, "b s feats -> feats (b s)"))
     time_logs["(7) Getting data for quantiles"] = time.time() - t0
     t0 = time.time()
 
 
     # ! Return the output, as a dict of FeatureData items
-    sae_vis_data = SaeVisData(feature_data_dict, feature_act_quantiles, cfg)
+    sae_vis_data = SaeVisData(feature_data_dict, feature_stats, cfg)
     return sae_vis_data, time_logs
 
 
@@ -451,10 +438,10 @@ def _get_feature_data(
     all_resid_post = []
     all_feat_acts = []
 
-    # Create objects to store the data for computing correlation coefficients (for left tables), if we're using them
-    corrcoef_neurons = BatchedCorrCoef()
-    corrcoef_encoder = BatchedCorrCoef()
-    corrcoef_encoder_B = BatchedCorrCoef() if encoder_B is not None else None
+    # Create objects to store the data for computing rolling stats
+    corrcoef_neurons = RollingCorrCoef()
+    corrcoef_encoder = RollingCorrCoef(indices=feature_indices, with_self=True)
+    corrcoef_encoder_B = RollingCorrCoef() if encoder_B is not None else None
 
     # Get encoder & decoder directions
     feature_out_dir = encoder.W_dec[feature_indices] # [feats d_autoencoder]
@@ -892,7 +879,7 @@ def parse_prompt_data(
             # was stored `sae_vis_data`. This quantiles object has a method to return quantiles for a given set of
             # data, as well as the precision (we make the precision higher for quantiles closer to 100%, because these
             # are usually the quantiles we're interested in, and it lets us to save space in `feature_act_quantiles`).
-            act_quantile, act_precision = sae_vis_data.feature_act_quantiles.get_quantile(_feat_acts, feat_acts_nonzero_locations)
+            act_quantile, act_precision = sae_vis_data.feature_stats.get_quantile(_feat_acts, feat_acts_nonzero_locations)
             act_quantile_topk = TopK(act_quantile, k=k, largest=True)
             act_formatting = [f".{act_precision[i]-2}%" for i in act_quantile_topk.indices]
             top_features = _feature_idx[act_quantile_topk.indices].tolist()
