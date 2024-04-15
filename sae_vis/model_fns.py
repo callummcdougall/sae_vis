@@ -60,7 +60,7 @@ class AutoEncoder(nn.Module):
         self.to(cfg.device)
 
     def forward(self, x: torch.Tensor):
-        x_cent = x - self.b_dec
+        x_cent = x # - self.b_dec # TODO: make this a config parameter
         acts = F.relu(x_cent @ self.W_enc + self.b_enc)
         x_reconstruct = acts @ self.W_dec + self.b_dec
         l2_loss = (x_reconstruct.float() - x.float()).pow(2).sum(-1).mean(0)
