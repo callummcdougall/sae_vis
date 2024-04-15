@@ -66,7 +66,7 @@ class PromptConfig(BaseComponentConfig):
 
 @dataclass
 class SequencesConfig(BaseComponentConfig):
-    buffer: tuple[int, int] = (5, 5)
+    buffer: tuple[int, int] | None = (5, 5)
     compute_buffer: bool = True
     n_quantiles: int = 10
     top_acts_group_size: int = 20
@@ -78,8 +78,8 @@ class SequencesConfig(BaseComponentConfig):
     def data_is_contained_in(self, other) -> bool:
         assert isinstance(other, self.__class__)
         return all([
-            self.buffer[0] <= other.buffer[0], # the buffer needs to be <=
-            self.buffer[1] <= other.buffer[1],
+            self.buffer[0] <= other.buffer[0] or self.buffer is None, # the buffer needs to be <=
+            self.buffer[1] <= other.buffer[1] or self.buffer is None,
             int(self.compute_buffer) <= int(other.compute_buffer), # we can't compute the buffer if we didn't in `other`
             self.n_quantiles in {0, other.n_quantiles}, # we actually need the quantiles identical (or one to be zero)
             self.top_acts_group_size <= other.top_acts_group_size, # group size needs to be <=

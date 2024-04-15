@@ -604,7 +604,7 @@ def get_sequences_data(
     # Get buffer, s.t. we're looking for bold tokens in the range `buffer[0] : buffer[1]`. For each bold token, we need
     # to see `seq_cfg.buffer[0]+1` behind it (plus 1 because we need the prev token to compute loss effect), and we need
     # to see `seq_cfg.buffer[1]` ahead of it
-    buffer = (seq_cfg.buffer[0]+1, -seq_cfg.buffer[1])
+    buffer = (seq_cfg.buffer[0]+1, -seq_cfg.buffer[1]) if seq_cfg.buffer is not None else (5, -5)
 
     # Get the top-activating tokens
     indices = k_largest_indices(feat_acts, k=seq_cfg.top_acts_group_size, buffer=buffer)
@@ -626,11 +626,20 @@ def get_sequences_data(
 
     # ! (2) Get the buffer indices
 
-    # Get the buffer indices, by adding a broadcasted arange object. At this point, indices_buf contains 1 more token
-    # than the length of the sequences we'll see (because it also contains the token before the sequence starts).
-    buffer_tensor = torch.arange(-seq_cfg.buffer[0] - 1, seq_cfg.buffer[1] + 1, device=indices_bold.device)
-    indices_buf = einops.repeat(indices_bold, "batch two -> batch seq two", seq=seq_cfg.buffer[0] + seq_cfg.buffer[1] + 2)
-    indices_buf = torch.stack([indices_buf[..., 0], indices_buf[..., 1] + buffer_tensor], dim=-1)
+    if seq_cfg.buffer is not None:
+        # Get the buffer indices, by adding a broadcasted arange object. At this point, indices_buf contains 1 more token
+        # than the length of the sequences we'll see (because it also contains the token before the sequence starts).
+        buffer_tensor = torch.arange(-seq_cfg.buffer[0] - 1, seq_cfg.buffer[1] + 1, device=indices_bold.device)
+        indices_buf = einops.repeat(indices_bold, "batch two -> batch seq two", seq=seq_cfg.buffer[0] + seq_cfg.buffer[1] + 2)
+        indices_buf = torch.stack([indices_buf[..., 0], indices_buf[..., 1] + buffer_tensor], dim=-1)
+    else:
+        # If we don't specify a sequence, then do all of the indices.
+        seq_length = feat_acts.shape[-1]
+        seq_length_with_padding = seq_length + 2
+        indices_buf = einops.repeat(indices_bold, "batch two -> batch seq two", seq=seq_length_with_padding)
+        indices_buf = torch.stack([indices_buf[..., 0], indices_buf[..., 1]], dim=-1)
+        full_range = torch.arange(0, seq_length_with_padding)
+        indices_buf[:,:,1] = full_range    
 
     
     # ! (3) Extract the token IDs, feature activations & residual stream values for those positions
