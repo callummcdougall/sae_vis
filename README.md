@@ -28,12 +28,18 @@ In the demo Colab, we show the two different types of vis which are supported by
 <!-- <img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-snip-2.png" width="800"> -->
 <img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/prompt-vis-video.gif" width="800">
 
+# Contributing
+
+This project is uses [Poetry](https://python-poetry.org/) for dependency management. After cloning the repo, install dependencies with `poetry install`.
+
+This project uses [Ruff](https://docs.astral.sh/ruff/) for formatting and linting. If you submit a PR, make sure that your code passes all checks. You can run all check with `Make check-all`.
+
 # Version history (recording started at `0.2.9`)
 
-* `0.2.9` - added table for pairwise feature correlations (not just encoder-B correlations) 
-* `0.2.10` - fix some anomalous characters
-* `0.2.11` - update PyPI with longer description
-* `0.2.12` - fix height parameter of config, add videos to PyPI description
-* `0.2.13` - add to dependencies, and fix SAELens section
-* `0.2.14` - fix mistake in dependencies
-* `0.2.15` - refactor to support eventual scatterplot-based feature browser, fix `&rsquo;` HTML
+- `0.2.9` - added table for pairwise feature correlations (not just encoder-B correlations)
+- `0.2.10` - fix some anomalous characters
+- `0.2.11` - update PyPI with longer description
+- `0.2.12` - fix height parameter of config, add videos to PyPI description
+- `0.2.13` - add to dependencies, and fix SAELens section
+- `0.2.14` - fix mistake in dependencies
+- `0.2.15` - refactor to support eventual scatterplot-based feature browser, fix `&rsquo;` HTML
