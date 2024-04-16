@@ -916,11 +916,13 @@ class SaeVisData:
             d_in, d_hidden = encoder.W_enc.shape
             device = encoder.W_enc.device
             encoder_cfg = AutoEncoderConfig(d_in=d_in, d_hidden=d_hidden)
-            encoder = AutoEncoder(encoder_cfg).to(device)
-            encoder.load_state_dict(encoder.state_dict());
+            encoder_wrapper = AutoEncoder(encoder_cfg).to(device)
+            encoder_wrapper.load_state_dict(encoder.state_dict());
+        else:
+            encoder_wrapper = encoder
 
         sae_vis_data = get_feature_data(
-            encoder = encoder,
+            encoder = encoder_wrapper,
             model = model,
             tokens = tokens,
             cfg = cfg,
@@ -928,7 +930,7 @@ class SaeVisData:
         )
         sae_vis_data.cfg = cfg
         sae_vis_data.model = model
-        sae_vis_data.encoder = encoder
+        sae_vis_data.encoder = encoder_wrapper
         sae_vis_data.encoder_B = encoder_B
 
         return sae_vis_data

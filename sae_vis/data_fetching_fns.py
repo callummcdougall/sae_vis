@@ -13,6 +13,7 @@ from rich.table import Table
 from collections import defaultdict
 from transformer_lens import utils, HookedTransformer
 from tqdm.auto import tqdm
+import gc
 
 Arr = np.ndarray
 
@@ -571,7 +572,7 @@ def get_feature_data(
     assert isinstance(cfg.hook_point, str), "Error: cfg.hook_point must be a string"
     model_wrapper = TransformerLensWrapper(model, cfg.hook_point)
 
-    # For each feat: get new data and update global data storage objects
+    # For each batch of features: get new data and update global data storage objects
     for features in feature_batches:
         new_feature_data, new_time_logs = _get_feature_data(
             encoder, encoder_B, model_wrapper, tokens, features, cfg, progress
