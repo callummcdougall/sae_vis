@@ -28,6 +28,19 @@ In the demo Colab, we show the two different types of vis which are supported by
 <!-- <img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-snip-2.png" width="800"> -->
 <img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/prompt-vis-video.gif" width="800">
 
+# Citing this work
+
+To cite this work, you can use this bibtex citation:
+
+```
+@misc{sae_vis,
+    title  = {{SAE Visualizer}},
+    author = {Callum McDougall},
+    howpublished    = {\url{https://github.com/callummcdougall/sae_vis}},
+    year   = {2024}
+}
+```
+
 # Contributing
 
 This project is uses [Poetry](https://python-poetry.org/) for dependency management. After cloning the repo, install dependencies with `poetry install`.
