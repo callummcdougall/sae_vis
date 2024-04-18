@@ -2,7 +2,9 @@ This codebase was designed to replicate Anthropic's sparse autoencoder visualisa
 
 Install with `pip install sae-vis`. Link to PyPI page [here](https://pypi.org/project/sae-vis/).
 
-**Important note** - this repo has recently been significantly restructured. The recent changes include:
+# Features & Links
+
+**Important note** - this repo was significantly restructured in March 2024 (we'll remove this message at the end of April). The recent changes include:
 
 - The ability to view multiple features on the same page (rather than just one feature at a time)
 - D3-backed visualisations (which can do things like add lines to histograms as you hover over tokens)
@@ -18,8 +20,39 @@ In the demo Colab, we show the two different types of vis which are supported by
 
 1. **Feature-centric vis**, where you look at a single feature and see e.g. which sequences in a large dataset this feature fires strongest on.
 
-<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-snip-1B.png" width="800">
+<!-- <img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-snip-1B.png" width="800"> -->
+<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/feature-vis-video.gif" width="800">
 
 2. **Prompt-centric vis**, where you input a custom prompt and see which features score highest on that prompt, according to a variety of possible metrics.
 
-<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-snip-2.png" width="800">
+<!-- <img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-snip-2.png" width="800"> -->
+<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/prompt-vis-video.gif" width="800">
+
+# Citing this work
+
+To cite this work, you can use this bibtex citation:
+
+```
+@misc{sae_vis,
+    title  = {{SAE Visualizer}},
+    author = {Callum McDougall},
+    howpublished    = {\url{https://github.com/callummcdougall/sae_vis}},
+    year   = {2024}
+}
+```
+
+# Contributing
+
+This project is uses [Poetry](https://python-poetry.org/) for dependency management. After cloning the repo, install dependencies with `poetry install`.
+
+This project uses [Ruff](https://docs.astral.sh/ruff/) for formatting and linting. If you submit a PR, make sure that your code passes all checks. You can run all check with `Make check-all`.
+
+# Version history (recording started at `0.2.9`)
+
+- `0.2.9` - added table for pairwise feature correlations (not just encoder-B correlations)
+- `0.2.10` - fix some anomalous characters
+- `0.2.11` - update PyPI with longer description
+- `0.2.12` - fix height parameter of config, add videos to PyPI description
+- `0.2.13` - add to dependencies, and fix SAELens section
+- `0.2.14` - fix mistake in dependencies
+- `0.2.15` - refactor to support eventual scatterplot-based feature browser, fix `&rsquo;` HTML
