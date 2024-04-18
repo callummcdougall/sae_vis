@@ -56,3 +56,4 @@ This project uses [Ruff](https://docs.astral.sh/ruff/) for formatting and lintin
 - `0.2.13` - add to dependencies, and fix SAELens section
 - `0.2.14` - fix mistake in dependencies
 - `0.2.15` - refactor to support eventual scatterplot-based feature browser, fix `&rsquo;` HTML
+- `0.2.16` - allow disabling buffer in feature generation, fix demo notebook
