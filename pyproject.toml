@@ -1,0 +1,38 @@
+[tool.poetry]
+name = "sae-vis"
+version = "0.2.15"
+description = "Open-source SAE visualizer, based on Anthropic's published visualizer."
+authors = ["Callum McDougall <cal.s.mcdougall@gmail.com>"]
+readme = "README.md"
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+torch = "^2.0.0"
+einops = "^0.7.0"
+datasets = "^2.0.0"
+dataclasses-json = "^0.6.4"
+jaxtyping = "^0.2.28"
+sae-lens = {git = "https://github.com/jbloomAus/SAELens.git", branch = "sae_vis_215"}
+transformer-lens = "^1.0.0"
+eindex-callum = "^0.1.0"
+rich = "^13.7.1"
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.3.7"
+pytest = "^8.1.1"
+ipykernel = "^6.29.4"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.isort]
+profile = "black"
+
+[tool.ruff]
+exclude = ["sae_vis/css", "sae_vis/js", "sae_vis/html"]
+
+[tool.ruff.lint]
+ignore = ["E203", "E501", "E731", "F722", "E741", "F821", "F403", "ARG002"]
+extend-select = ["UP", "TID", "I", "F", "E", "ARG"]
