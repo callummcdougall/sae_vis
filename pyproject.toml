@@ -13,6 +13,7 @@ einops = "^0.7.0"
 datasets = "^2.0.0"
 dataclasses-json = "^0.6.4"
 jaxtyping = "^0.2.28"
+sae-lens = {git = "https://github.com/jbloomAus/SAELens.git", branch = "sae_vis_215"}
 transformer-lens = "^1.0.0"
 eindex-callum = "^0.1.0"
 rich = "^13.7.1"
@@ -20,6 +21,7 @@ rich = "^13.7.1"
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.3.7"
 pytest = "^8.1.1"
+ipykernel = "^6.29.4"
 
 [build-system]
 requires = ["poetry-core"]
