@@ -7,8 +7,8 @@ from rich.table import Table
 from rich.tree import Tree
 
 SEQUENCES_CONFIG_HELP = dict(
-    buffer="How many tokens to add as context to each sequence. The tokens chosen for the top acts / quantile groups \
-can't be outside the buffer range.",
+    buffer="How many tokens to add as context to each sequence, on each side. The tokens chosen for the top acts / \
+quantile groups can't be outside the buffer range. If None, we use the entire sequence as context.",
     compute_buffer="If False, then we don't compute the loss effect, activations, or any other data for tokens \
 other than the bold tokens in our sequences (saving time).",
     n_quantiles="Number of quantile groups for the sequences. If zero, we only show top activations, no quantile \
@@ -83,8 +83,8 @@ class SequencesConfig(BaseComponentConfig):
         assert isinstance(other, self.__class__)
         return all(
             [
-                self.buffer[0] <= other.buffer[0] or self.buffer is None,  # the buffer needs to be <=
-                self.buffer[1] <= other.buffer[1] or self.buffer is None,
+                self.buffer is None or (other.buffer is not None and self.buffer[0] <= other.buffer[0]),  # the buffer needs to be <=
+                self.buffer is None or (other.buffer is not None and self.buffer[1] <= other.buffer[1]),
                 int(self.compute_buffer)
                 <= int(
                     other.compute_buffer

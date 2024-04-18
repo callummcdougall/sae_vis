@@ -65,7 +65,7 @@ def k_largest_indices(
     x: Float[Tensor, "rows cols"],
     k: int,
     largest: bool = True,
-    buffer: Tuple[int, int] = (5, -5),
+    buffer: Tuple[int, int] | None = (5, -5),
 ) -> Int[Tensor, "k 2"]:
     """
     Args:
@@ -77,12 +77,15 @@ def k_largest_indices(
         largest:
             Whether to return the indices for the largest or smallest values
         buffer:
-            Positions to avoid at the start / end of the sequence, i.e. we can include the slice buffer[0]: buffer[1]
+            Positions to avoid at the start / end of the sequence, i.e. we can include the slice buffer[0]: buffer[1].
+            If None, then we use all sequences
 
     Returns:
         The indices of the top or bottom `k` elements in `x`. In other words, output[i, :] is the (row, column) index of
         the i-th largest/smallest element in `x`.
     """
+    if buffer is None:
+        buffer = (0, x.size(1))
     x = x[:, buffer[0] : buffer[1]]
     indices = x.flatten().topk(k=k, largest=largest).indices
     rows = indices // x.size(1)
@@ -107,7 +110,7 @@ def random_range_indices(
     x: Float[Tensor, "batch seq"],
     k: int,
     bounds: Tuple[float, float],
-    buffer: Tuple[int, int] = (5, -5),
+    buffer: Tuple[int, int] | None = (5, -5),
 ) -> Int[Tensor, "k 2"]:
     """
     Args:
@@ -124,6 +127,9 @@ def random_range_indices(
     Returns:
         Same thing as `k_largest_indices`, but the difference is that we're using quantiles rather than top/bottom k.
     """
+    if buffer is None:
+        buffer = (0, x.size(1))
+
     # Limit x, because our indices (bolded words) shouldn't be too close to the left/right of sequence
     x = x[:, buffer[0] : buffer[1]]
 
