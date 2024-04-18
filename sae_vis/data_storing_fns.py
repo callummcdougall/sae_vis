@@ -3,7 +3,7 @@ import json
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Optional, Union, Literal
 
 import numpy as np
 from dataclasses_json import dataclass_json
@@ -406,27 +406,28 @@ class SequenceData:
         # If we only have data for the bold token, we pad out everything with zeros or empty lists
         only_bold = isinstance(cfg, SequencesConfig) and not (cfg.compute_buffer)
         if only_bold:
+            assert bold_idx != "max", "Don't know how to deal with this case yet."
             feat_acts = [
-                self.feat_acts[0] if i == bold_idx else 0.0 for i in range(self.seq_len)
+                self.feat_acts[0] if (i == bold_idx) else 0.0 for i in range(self.seq_len)
             ]
             loss_contribution = [
-                self.loss_contribution[0] if i == bold_idx + 1 else 0.0
+                self.loss_contribution[0] if (i == bold_idx) + 1 else 0.0
                 for i in range(self.seq_len)
             ]
             pos_ids = [
-                self.top_token_ids[0] if i == bold_idx + 1 else []
+                self.top_token_ids[0] if (i == bold_idx) + 1 else []
                 for i in range(self.seq_len)
             ]
             neg_ids = [
-                self.bottom_token_ids[0] if i == bold_idx + 1 else []
+                self.bottom_token_ids[0] if (i == bold_idx) + 1 else []
                 for i in range(self.seq_len)
             ]
             pos_val = [
-                self.top_logits[0] if i == bold_idx + 1 else []
+                self.top_logits[0] if (i == bold_idx) + 1 else []
                 for i in range(self.seq_len)
             ]
             neg_val = [
-                self.bottom_logits[0] if i == bold_idx + 1 else []
+                self.bottom_logits[0] if (i == bold_idx) + 1 else []
                 for i in range(self.seq_len)
             ]
         else:
@@ -484,9 +485,9 @@ class SequenceData:
             kwargs_hover_above: dict[str, bool] = {}
 
             # Get args if this is the bolded token (we make it bold, and maybe add permanent line to histograms)
-            if bold_idx is not None and bold_idx == i:
-                kwargs_bold["isBold"] = True
-                if permanent_line:
+            if bold_idx is not None:
+                kwargs_bold["isBold"] = (bold_idx == i) or (bold_idx == "max" and i == np.argmax(feat_acts).item())
+                if kwargs_bold["isBold"] and permanent_line:
                     kwargs_bold["permanentLine"] = True
 
             # If we only have data for the bold token, we hide all other tokens' hoverdata (and skip other kwargs)
@@ -608,18 +609,12 @@ class SequenceGroupData:
         """
         This creates a single group of sequences, i.e. title plus some number of vertically stacked sequences.
 
-        Note, `column` is treated specially here, because it might overflow (could be a tuple).
+        Note, `column` is treated specially here, because the col might overflow (hence colulmn could be a tuple).
 
-        Args:
-            decode_fn:      Mapping from token IDs to string tokens.
-            bold_idx:       If supplied, then we bold the token at this index. Default is the middle token. Note, this
-                            argument is only allowed if the sequence group contains just one sequence.
-            group_size:     Max size of sequences in the group (i.e. we truncate after this many, if argument supplied).
-            max_feat_act:  If supplied, then we use this as the most extreme value (for coloring by feature act).
-            permanent_line: If True, the bolded token for first seq in group will have a permanent line on histograms.
+        Args (from component-specific kwargs):
             seq_group_id:   The id of the sequence group div. This will usually be passed as e.g. "seq-group-001".
-            column:         The index of this column. Note that it can be a tuple, if our SequenceMultiGroupData object
-                            has overflowed into a new column.
+            group_size:     Max size of sequences in the group (i.e. we truncate after this many, if argument supplied).
+            max_feat_act:   If supplied, then we use this as the most extreme value (for coloring by feature act).
 
         Returns:
             html_obj:       Object containing the HTML and JavaScript data for this seq group.
@@ -649,7 +644,7 @@ class SequenceGroupData:
                 id_suffix=id_suffix,
                 column=column,
                 component_specific_kwargs=dict(
-                    bold_idx=cfg.buffer[0],
+                    bold_idx="max" if cfg.buffer is None else cfg.buffer[0],
                     permanent_line=False,  # in a group, we're never showing a permanent line (only for single seqs)
                     max_feat_act=max_feat_act,
                     max_loss_contribution=max_loss_contribution,
@@ -870,7 +865,7 @@ class FeatureData:
         layout: SaeVisLayoutConfig,
         decode_fn: Callable,
         column_idx: int,
-        bold_idx: int,
+        bold_idx: int | Literal["max"],
         title: str,
     ) -> HTML:
         """
@@ -881,6 +876,8 @@ class FeatureData:
             decode_fn:  We use this function to decode the token IDs into string tokens.
             column_idx: This method only gives us a single column (of the prompt-centric vis), so we need to know which
                         column this is (for the JavaScript data).
+            bold_idx:   Which index should be bolded in the sequence data. If "max", we default to bolding the max-act
+                        token in each sequence.
             title:      The title for this column, which will be used in the JavaScript data.
 
         Returns:
