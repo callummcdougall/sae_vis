@@ -83,8 +83,12 @@ class SequencesConfig(BaseComponentConfig):
         assert isinstance(other, self.__class__)
         return all(
             [
-                self.buffer is None or (other.buffer is not None and self.buffer[0] <= other.buffer[0]),  # the buffer needs to be <=
-                self.buffer is None or (other.buffer is not None and self.buffer[1] <= other.buffer[1]),
+                self.buffer is None
+                or (
+                    other.buffer is not None and self.buffer[0] <= other.buffer[0]
+                ),  # the buffer needs to be <=
+                self.buffer is None
+                or (other.buffer is not None and self.buffer[1] <= other.buffer[1]),
                 int(self.compute_buffer)
                 <= int(
                     other.compute_buffer
