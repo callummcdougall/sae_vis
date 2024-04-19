@@ -45,7 +45,7 @@ To cite this work, you can use this bibtex citation:
 
 This project is uses [Poetry](https://python-poetry.org/) for dependency management. After cloning the repo, install dependencies with `poetry install`.
 
-This project uses [Ruff](https://docs.astral.sh/ruff/) for formatting and linting. If you submit a PR, make sure that your code passes all checks. You can run all check with `Make check-all`.
+This project uses [Ruff](https://docs.astral.sh/ruff/) for formatting and linting, and [Pyright](https://github.com/microsoft/pyright) for type-checking. If you submit a PR, make sure that your code passes all checks. You can run all check with `make check-all`.
 
 # Version history (recording started at `0.2.9`)
 

@@ -1,5 +1,5 @@
 from dataclasses import asdict, dataclass, field
-from typing import Any, Iterable, Iterator, Literal, Optional, Union
+from typing import Any, Iterable, Iterator, Literal
 
 from dataclasses_json import dataclass_json
 from rich import print as rprint
@@ -45,7 +45,7 @@ FEATURE_TABLES_CONFIG_HELP = dict(
 
 @dataclass
 class BaseComponentConfig:
-    def data_is_contained_in(self, other) -> bool:
+    def data_is_contained_in(self, other: "BaseComponentConfig") -> bool:
         """
         This returns False only when the data that was computed based on `other` wouldn't be enough to show the data
         that was computed based on `self`. For instance, if `self` was a config object with 10 rows, and `other` had
@@ -79,7 +79,7 @@ class SequencesConfig(BaseComponentConfig):
     stack_mode: Literal["stack-all", "stack-quantiles", "stack-none"] = "stack-all"
     hover_below: bool = True
 
-    def data_is_contained_in(self, other) -> bool:
+    def data_is_contained_in(self, other: BaseComponentConfig) -> bool:
         assert isinstance(other, self.__class__)
         return all(
             [
@@ -122,7 +122,7 @@ class SequencesConfig(BaseComponentConfig):
 class ActsHistogramConfig(BaseComponentConfig):
     n_bins: int = 50
 
-    def data_is_contained_in(self, other) -> bool:
+    def data_is_contained_in(self, other: BaseComponentConfig) -> bool:
         assert isinstance(other, self.__class__)
         return self.n_bins == other.n_bins
 
@@ -135,7 +135,7 @@ class ActsHistogramConfig(BaseComponentConfig):
 class LogitsHistogramConfig(BaseComponentConfig):
     n_bins: int = 50
 
-    def data_is_contained_in(self, other) -> bool:
+    def data_is_contained_in(self, other: BaseComponentConfig) -> bool:
         assert isinstance(other, self.__class__)
         return self.n_bins == other.n_bins
 
@@ -148,7 +148,7 @@ class LogitsHistogramConfig(BaseComponentConfig):
 class LogitsTableConfig(BaseComponentConfig):
     n_rows: int = 10
 
-    def data_is_contained_in(self, other) -> bool:
+    def data_is_contained_in(self, other: BaseComponentConfig) -> bool:
         assert isinstance(other, self.__class__)
         return self.n_rows <= other.n_rows
 
@@ -165,7 +165,7 @@ class FeatureTablesConfig(BaseComponentConfig):
     correlated_features_table: bool = True
     correlated_b_features_table: bool = False
 
-    def data_is_contained_in(self, other) -> bool:
+    def data_is_contained_in(self, other: BaseComponentConfig) -> bool:
         assert isinstance(other, self.__class__)
         return all(
             [
@@ -182,21 +182,21 @@ class FeatureTablesConfig(BaseComponentConfig):
         return FEATURE_TABLES_CONFIG_HELP
 
 
-GenericComponentConfig = Union[
-    PromptConfig,
-    SequencesConfig,
-    ActsHistogramConfig,
-    LogitsHistogramConfig,
-    LogitsTableConfig,
-    FeatureTablesConfig,
-]
+GenericComponentConfig = (
+    PromptConfig
+    | SequencesConfig
+    | ActsHistogramConfig
+    | LogitsHistogramConfig
+    | LogitsTableConfig
+    | FeatureTablesConfig
+)
 
 
 class Column:
     def __init__(
         self,
         *args: GenericComponentConfig,
-        width: Optional[int] = None,
+        width: int | None = None,
     ):
         self.components = list(args)
         self.width = width
@@ -421,9 +421,9 @@ OOMs.",
 @dataclass
 class SaeVisConfig:
     # Data
-    hook_point: Optional[str] = None
-    features: Optional[int | Iterable[int]] = None
-    batch_size: Optional[int] = None
+    hook_point: str | None = None
+    features: int | Iterable[int] | None = None
+    batch_size: int | None = None
     minibatch_size_features: int = 256
     minibatch_size_tokens: int = 64
 
@@ -436,10 +436,10 @@ class SaeVisConfig:
     )
 
     # Misc
-    seed: Optional[int] = 0
+    seed: int | None = 0
     verbose: bool = False
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Used for type hinting (the actual method comes from the `dataclass_json` decorator)."""
         ...
 
