@@ -3,7 +3,7 @@ import json
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional, Union, Literal
+from typing import Any, Callable, Literal, Optional, Union
 
 import numpy as np
 from dataclasses_json import dataclass_json
@@ -408,7 +408,8 @@ class SequenceData:
         if only_bold:
             assert bold_idx != "max", "Don't know how to deal with this case yet."
             feat_acts = [
-                self.feat_acts[0] if (i == bold_idx) else 0.0 for i in range(self.seq_len)
+                self.feat_acts[0] if (i == bold_idx) else 0.0
+                for i in range(self.seq_len)
             ]
             loss_contribution = [
                 self.loss_contribution[0] if (i == bold_idx) + 1 else 0.0
@@ -486,7 +487,9 @@ class SequenceData:
 
             # Get args if this is the bolded token (we make it bold, and maybe add permanent line to histograms)
             if bold_idx is not None:
-                kwargs_bold["isBold"] = (bold_idx == i) or (bold_idx == "max" and i == np.argmax(feat_acts).item())
+                kwargs_bold["isBold"] = (bold_idx == i) or (
+                    bold_idx == "max" and i == np.argmax(feat_acts).item()
+                )
                 if kwargs_bold["isBold"] and permanent_line:
                     kwargs_bold["permanentLine"] = True
 

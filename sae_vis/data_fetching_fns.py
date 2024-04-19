@@ -687,9 +687,17 @@ def get_sequences_data(
     # Get buffer, s.t. we're looking for bold tokens in the range `buffer[0] : buffer[1]`. For each bold token, we need
     # to see `seq_cfg.buffer[0]+1` behind it (plus 1 because we need the prev token to compute loss effect), and we need
     # to see `seq_cfg.buffer[1]` ahead of it.
-    buffer = (seq_cfg.buffer[0] + 1, -seq_cfg.buffer[1]) if seq_cfg.buffer is not None else None
+    buffer = (
+        (seq_cfg.buffer[0] + 1, -seq_cfg.buffer[1])
+        if seq_cfg.buffer is not None
+        else None
+    )
     batch_size, seq_length = tokens.shape
-    padded_buffer_width = seq_cfg.buffer[0] + seq_cfg.buffer[1] + 2 if seq_cfg.buffer is not None else seq_length
+    padded_buffer_width = (
+        seq_cfg.buffer[0] + seq_cfg.buffer[1] + 2
+        if seq_cfg.buffer is not None
+        else seq_length
+    )
 
     # Get the top-activating tokens
     indices = k_largest_indices(feat_acts, k=seq_cfg.top_acts_group_size, buffer=buffer)
@@ -722,19 +730,33 @@ def get_sequences_data(
     if seq_cfg.buffer is not None:
         # Get the buffer indices, by adding a broadcasted arange object. At this point, indices_buf contains 1 more token
         # than the length of the sequences we'll see (because it also contains the token before the sequence starts).
-        buffer_tensor = torch.arange(-seq_cfg.buffer[0] - 1, seq_cfg.buffer[1] + 1, device=indices_bold.device)
-        indices_buf = einops.repeat(indices_bold, "n_bold two -> n_bold seq two", seq=seq_cfg.buffer[0] + seq_cfg.buffer[1] + 2)
-        indices_buf = torch.stack([indices_buf[..., 0], indices_buf[..., 1] + buffer_tensor], dim=-1)
+        buffer_tensor = torch.arange(
+            -seq_cfg.buffer[0] - 1, seq_cfg.buffer[1] + 1, device=indices_bold.device
+        )
+        indices_buf = einops.repeat(
+            indices_bold,
+            "n_bold two -> n_bold seq two",
+            seq=seq_cfg.buffer[0] + seq_cfg.buffer[1] + 2,
+        )
+        indices_buf = torch.stack(
+            [indices_buf[..., 0], indices_buf[..., 1] + buffer_tensor], dim=-1
+        )
     else:
         # If we don't specify a sequence, then do all of the indices.
-        indices_buf = torch.stack([
-            einops.repeat(indices_bold[:, 0], "n_bold -> n_bold seq", seq=seq_length), # batch indices of bold tokens
-            einops.repeat(torch.arange(seq_length), "seq -> n_bold seq", n_bold=n_bold), # all sequence indices
-        ], dim=-1)
+        indices_buf = torch.stack(
+            [
+                einops.repeat(
+                    indices_bold[:, 0], "n_bold -> n_bold seq", seq=seq_length
+                ),  # batch indices of bold tokens
+                einops.repeat(
+                    torch.arange(seq_length), "seq -> n_bold seq", n_bold=n_bold
+                ),  # all sequence indices
+            ],
+            dim=-1,
+        )
 
     assert indices_buf.shape == (n_bold, padded_buffer_width, 2)
 
-    
     # ! (3) Extract the token IDs, feature activations & residual stream values for those positions
 
     # Get the tokens which will be in our sequences
@@ -748,7 +770,9 @@ def get_sequences_data(
     # we split on cases here.
     if seq_cfg.compute_buffer:
         feat_acts_buf = eindex(
-            feat_acts, indices_buf, "[n_bold buf_plus1 0] [n_bold buf_plus1 1] -> n_bold buf_plus1"
+            feat_acts,
+            indices_buf,
+            "[n_bold buf_plus1 0] [n_bold buf_plus1 1] -> n_bold buf_plus1",
         )
         feat_acts_pre_ablation = feat_acts_buf[:, :-1]
         feat_acts_coloring = feat_acts_buf[:, 1:]
