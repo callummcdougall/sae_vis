@@ -1,7 +1,6 @@
 import math
 import time
 from collections import defaultdict
-from typing import Optional, Union
 
 import einops
 import numpy as np
@@ -56,10 +55,10 @@ def compute_feat_acts(
     model_acts: Float[Tensor, "batch seq d_in"],
     feature_idx: list[int],
     encoder: AutoEncoder,
-    encoder_B: Optional[AutoEncoder] = None,
-    corrcoef_neurons: Optional[RollingCorrCoef] = None,
-    corrcoef_encoder: Optional[RollingCorrCoef] = None,
-    corrcoef_encoder_B: Optional[RollingCorrCoef] = None,
+    encoder_B: AutoEncoder | None = None,
+    corrcoef_neurons: RollingCorrCoef | None = None,
+    corrcoef_encoder: RollingCorrCoef | None = None,
+    corrcoef_encoder_B: RollingCorrCoef | None = None,
 ) -> Float[Tensor, "batch seq feats"]:
     """
     This function computes the feature activations, given a bunch of model data. It also updates the rolling correlation
@@ -131,17 +130,17 @@ def compute_feat_acts(
 @torch.inference_mode()
 def parse_feature_data(
     tokens: Int[Tensor, "batch seq"],
-    feature_indices: Union[int, list[int]],
+    feature_indices: int | list[int],
     all_feat_acts: Float[Tensor, "... feats"],
     feature_resid_dir: Float[Tensor, "feats d_model"],
     all_resid_post: Float[Tensor, "... d_model"],
     W_U: Float[Tensor, "d_model d_vocab"],
     cfg: SaeVisConfig,
-    feature_out_dir: Optional[Float[Tensor, "feats d_out"]] = None,
-    corrcoef_neurons: Optional[RollingCorrCoef] = None,
-    corrcoef_encoder: Optional[RollingCorrCoef] = None,
-    corrcoef_encoder_B: Optional[RollingCorrCoef] = None,
-    progress: Optional[list[tqdm]] = None,
+    feature_out_dir: Float[Tensor, "feats d_out"] | None = None,
+    corrcoef_neurons: RollingCorrCoef | None = None,
+    corrcoef_encoder: RollingCorrCoef | None = None,
+    corrcoef_encoder_B: RollingCorrCoef | None = None,
+    progress: list[tqdm] | None = None,
 ) -> tuple[SaeVisData, dict[str, float]]:
     """Convert generic activation data into a SaeVisData object, which can be used to create the feature-centric vis.
 
@@ -398,12 +397,12 @@ def parse_feature_data(
 @torch.inference_mode()
 def _get_feature_data(
     encoder: AutoEncoder,
-    encoder_B: Optional[AutoEncoder],
+    encoder_B: AutoEncoder | None,
     model: TransformerLensWrapper,
     tokens: Int[Tensor, "batch seq"],
-    feature_indices: Union[int, list[int]],
+    feature_indices: int | list[int],
     cfg: SaeVisConfig,
-    progress: Optional[list[tqdm]] = None,
+    progress: list[tqdm] | None = None,
 ) -> tuple[SaeVisData, dict[str, float]]:
     """
     Gets data that will be used to create the sequences in the feature-centric HTML visualisation.
@@ -547,7 +546,7 @@ def get_feature_data(
     model: HookedTransformer,
     tokens: Int[Tensor, "batch seq"],
     cfg: SaeVisConfig,
-    encoder_B: Optional[AutoEncoder] = None,
+    encoder_B: AutoEncoder | None = None,
 ) -> SaeVisData:
     """
     This is the main function which users will run to generate the feature visualization data. It batches this
@@ -692,7 +691,7 @@ def get_sequences_data(
         if seq_cfg.buffer is not None
         else None
     )
-    batch_size, seq_length = tokens.shape
+    _batch_size, seq_length = tokens.shape
     padded_buffer_width = (
         seq_cfg.buffer[0] + seq_cfg.buffer[1] + 2
         if seq_cfg.buffer is not None
@@ -873,7 +872,7 @@ def parse_prompt_data(
     feature_resid_dir: Float[Tensor, "feats d_model"],
     resid_post: Float[Tensor, "seq d_model"],
     W_U: Float[Tensor, "d_model d_vocab"],
-    feature_idx: Optional[list[int]] = None,
+    feature_idx: list[int] | None = None,
     num_top_features: int = 10,
 ) -> dict[str, tuple[list[int], list[str]]]:
     """
