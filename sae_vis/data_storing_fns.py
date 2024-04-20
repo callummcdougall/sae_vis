@@ -1016,8 +1016,10 @@ class SaeVisData:
 
         # If encoder isn't an AutoEncoder, we wrap it in one
         if not isinstance(encoder, AutoEncoder):
-            assert (
-                set(encoder.state_dict().keys()).issuperset({"W_enc", "W_dec", "b_enc", "b_dec"})
+            assert set(
+                encoder.state_dict().keys()
+            ).issuperset(
+                {"W_enc", "W_dec", "b_enc", "b_dec"}
             ), "If encoder isn't an AutoEncoder, it should have weights 'W_enc', 'W_dec', 'b_enc', 'b_dec'"
             d_in, d_hidden = encoder.W_enc.shape
             device = encoder.W_enc.device
