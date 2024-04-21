@@ -98,7 +98,7 @@ class AutoEncoder(nn.Module):
         self.W_dec.grad -= W_dec_grad_proj
 
     @classmethod
-    def load_from_hf(cls, version):
+    def load_from_hf(cls, version: str):
         """
         Loads the saved autoencoder from HuggingFace.
 
@@ -110,11 +110,11 @@ class AutoEncoder(nn.Module):
         version 47 is the final checkpoint of the second autoencoder run.
         """
         assert version in ["run1", "run2"]
-        version = 25 if version == "run1" else 47
+        version_num = 25 if version == "run1" else 47
 
         # Load in state dict
         state_dict = utils.download_file_from_hf(
-            "NeelNanda/sparse_autoencoder", f"{version}.pt", force_is_torch=True
+            "NeelNanda/sparse_autoencoder", f"{version_num}.pt", force_is_torch=True
         )
         assert isinstance(state_dict, dict)
         assert set(state_dict.keys()) == {"W_enc", "W_dec", "b_enc", "b_dec"}

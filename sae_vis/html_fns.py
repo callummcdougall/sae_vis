@@ -1,7 +1,7 @@
 import json
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from matplotlib import colors
 
@@ -89,8 +89,8 @@ class HTML:
 
     def __init__(
         self,
-        html_data: Optional[dict[int | tuple[int, int], str]] = None,
-        js_data: Optional[dict[str, dict[str, Any]]] = None,
+        html_data: dict[int | tuple[int, int], str] | None = None,
+        js_data: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.html_data = html_data if (html_data is not None) else {}
         self.js_data = js_data if (js_data is not None) else {}
@@ -242,6 +242,10 @@ function defineData() {{
                 # Deal with case (2) here
                 column = layout.columns[col_idx[0]]
                 column_id = "column-" + "-".join(map(str, col_idx))
+            else:
+                raise TypeError(
+                    f"Expected col_idx to be int or tuple, but got {col_idx}"
+                )
             html_str += "\n\n" + grid_column(
                 html_str_column, column=column, layout=layout, id=column_id
             )
@@ -282,7 +286,7 @@ def grid_column(
     html_contents: str,
     column: Column,
     layout: SaeVisLayoutConfig,
-    id: Optional[str] = None,
+    id: str | None = None,
     indent: str = " " * 4,
 ) -> str:
     """

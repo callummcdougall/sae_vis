@@ -20,3 +20,5 @@ jobs:
         run: poetry run ruff check
       - name: check formatting
         run: poetry run ruff format --check
+      - name: check types
+        run: poetry run pyright

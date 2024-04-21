@@ -3,7 +3,7 @@ import json
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional, Union, Literal
+from typing import Any, Callable, Literal
 
 import numpy as np
 from dataclasses_json import dataclass_json
@@ -111,7 +111,7 @@ class FeatureTablesData:
         html_str = html_str.replace("FEATURE_TABLES_ID", f"feature-tables-{id_suffix}")
 
         # Create dictionary storing the data
-        data: dict[str, list[dict]] = {}
+        data: dict[str, list[dict[str, str | float]]] = {}
 
         # Store the neuron alignment data, if it exists
         if len(self.neuron_alignment_indices) > 0:
@@ -280,7 +280,10 @@ class LogitsTableData:
         html_str = html_str.replace("LOGITS_TABLE_ID", f"logits-table-{id_suffix}")
 
         # Create object for storing JS data
-        data: dict[str, list] = {"negLogits": [], "posLogits": []}
+        data: dict[str, list[dict[str, str | float]]] = {
+            "negLogits": [],
+            "posLogits": [],
+        }
 
         # Get data for the tables of pos/neg logits
         for i in range(len(neg_str)):
@@ -408,7 +411,8 @@ class SequenceData:
         if only_bold:
             assert bold_idx != "max", "Don't know how to deal with this case yet."
             feat_acts = [
-                self.feat_acts[0] if (i == bold_idx) else 0.0 for i in range(self.seq_len)
+                self.feat_acts[0] if (i == bold_idx) else 0.0
+                for i in range(self.seq_len)
             ]
             loss_contribution = [
                 self.loss_contribution[0] if (i == bold_idx) + 1 else 0.0
@@ -486,7 +490,9 @@ class SequenceData:
 
             # Get args if this is the bolded token (we make it bold, and maybe add permanent line to histograms)
             if bold_idx is not None:
-                kwargs_bold["isBold"] = (bold_idx == i) or (bold_idx == "max" and i == np.argmax(feat_acts).item())
+                kwargs_bold["isBold"] = (bold_idx == i) or (
+                    bold_idx == "max" and i == np.argmax(feat_acts).item()
+                )
                 if kwargs_bold["isBold"] and permanent_line:
                     kwargs_bold["permanentLine"] = True
 
@@ -720,7 +726,7 @@ class SequenceMultiGroupData:
         match cfg.stack_mode:
             case "stack-all":
                 # Here, we stack all groups into 1st column
-                cols = [column for i in range(n_groups)]
+                cols = [column for _ in range(n_groups)]
             case "stack-quantiles":
                 # Here, we give 1st group its own column, and stack all groups into second column
                 cols = [(column, 0)] + [(column, 1) for _ in range(n_quantile_groups)]
@@ -756,14 +762,14 @@ class SequenceMultiGroupData:
         return html_obj
 
 
-GenericData = Union[
-    FeatureTablesData,
-    ActsHistogramData,
-    LogitsTableData,
-    LogitsHistogramData,
-    SequenceMultiGroupData,
-    SequenceData,
-]
+GenericData = (
+    FeatureTablesData
+    | ActsHistogramData
+    | LogitsTableData
+    | LogitsHistogramData
+    | SequenceMultiGroupData
+    | SequenceData
+)
 
 
 @dataclass
@@ -826,7 +832,7 @@ class FeatureData:
     def _get_html_data_feature_centric(
         self,
         layout: SaeVisLayoutConfig,
-        decode_fn: Callable,
+        decode_fn: Callable[[int | list[int]], str | list[str]],
     ) -> HTML:
         """
         Returns the HTML object for a single feature-centric view. These are assembled together into the full feature-
@@ -863,7 +869,7 @@ class FeatureData:
     def _get_html_data_prompt_centric(
         self,
         layout: SaeVisLayoutConfig,
-        decode_fn: Callable,
+        decode_fn: Callable[[int | list[int]], str | list[str]],
         column_idx: int,
         bold_idx: int | Literal["max"],
         title: str,
@@ -953,14 +959,16 @@ class _SaeVisData:
 
     @classmethod
     def from_dict(
-        cls, data: dict
+        cls, data: dict[str, Any]
     ) -> (
         "_SaeVisData"
     ): ...  # just for type hinting; the method comes from 'dataclass_json'
 
     def to_dict(
         self,
-    ) -> dict: ...  # just for type hinting; the method comes from 'dataclass_json'
+    ) -> dict[
+        str, Any
+    ]: ...  # just for type hinting; the method comes from 'dataclass_json'
 
 
 @dataclass
@@ -985,9 +993,9 @@ class SaeVisData:
     feature_stats: FeatureStatistics = field(default_factory=FeatureStatistics)
     cfg: SaeVisConfig = field(default_factory=SaeVisConfig)
 
-    model: Optional[HookedTransformer] = None
-    encoder: Optional[AutoEncoder] = None
-    encoder_B: Optional[AutoEncoder] = None
+    model: HookedTransformer | None = None
+    encoder: AutoEncoder | None = None
+    encoder_B: AutoEncoder | None = None
 
     def update(self, other: "SaeVisData") -> None:
         """
@@ -1007,20 +1015,22 @@ class SaeVisData:
         model: HookedTransformer,
         tokens: Int[Tensor, "batch seq"],
         cfg: SaeVisConfig,
-        encoder_B: Optional[AutoEncoder] = None,
+        encoder_B: AutoEncoder | None = None,
     ) -> "SaeVisData":
         from sae_vis.data_fetching_fns import get_feature_data
 
         # If encoder isn't an AutoEncoder, we wrap it in one
         if not isinstance(encoder, AutoEncoder):
-            assert (
-                set(encoder.state_dict().keys()) == {"W_enc", "W_dec", "b_enc", "b_dec"}
+            assert set(
+                encoder.state_dict().keys()
+            ).issuperset(
+                {"W_enc", "W_dec", "b_enc", "b_dec"}
             ), "If encoder isn't an AutoEncoder, it should have weights 'W_enc', 'W_dec', 'b_enc', 'b_dec'"
             d_in, d_hidden = encoder.W_enc.shape
             device = encoder.W_enc.device
             encoder_cfg = AutoEncoderConfig(d_in=d_in, d_hidden=d_hidden)
             encoder_wrapper = AutoEncoder(encoder_cfg).to(device)
-            encoder_wrapper.load_state_dict(encoder.state_dict())
+            encoder_wrapper.load_state_dict(encoder.state_dict(), strict=False)
         else:
             encoder_wrapper = encoder
 
@@ -1041,7 +1051,7 @@ class SaeVisData:
     def save_feature_centric_vis(
         self,
         filename: str | Path,
-        feature_idx: Optional[int] = None,
+        feature_idx: int | None = None,
     ) -> None:
         """
         Returns the HTML string for the view which lets you navigate between different features.
@@ -1061,6 +1071,7 @@ class SaeVisData:
 
         # Get tokenize function (we only need to define it once)
         assert self.model is not None
+        assert self.model.tokenizer is not None
         decode_fn = get_decode_html_safe_fn(self.model.tokenizer)
 
         # Create iterator
@@ -1095,8 +1106,8 @@ class SaeVisData:
         self,
         prompt: str,
         filename: str | Path,
-        metric: Optional[str] = None,
-        seq_pos: Optional[int] = None,
+        metric: str | None = None,
+        seq_pos: int | None = None,
         num_top_features: int = 10,
     ):
         """
@@ -1137,6 +1148,7 @@ class SaeVisData:
 
         # Get tokenize function (we only need to define it once)
         assert self.model is not None
+        assert self.model.tokenizer is not None
         decode_fn = get_decode_html_safe_fn(self.model.tokenizer)
 
         # For each (metric, seqpos) object, we merge the prompt-centric views of each of the top features, then we merge
