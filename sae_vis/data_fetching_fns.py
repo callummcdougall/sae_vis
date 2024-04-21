@@ -1,7 +1,6 @@
 import math
 import time
 from collections import defaultdict
-from typing import Optional, Union
 
 import einops
 import numpy as np
@@ -56,10 +55,10 @@ def compute_feat_acts(
     model_acts: Float[Tensor, "batch seq d_in"],
     feature_idx: list[int],
     encoder: AutoEncoder,
-    encoder_B: Optional[AutoEncoder] = None,
-    corrcoef_neurons: Optional[RollingCorrCoef] = None,
-    corrcoef_encoder: Optional[RollingCorrCoef] = None,
-    corrcoef_encoder_B: Optional[RollingCorrCoef] = None,
+    encoder_B: AutoEncoder | None = None,
+    corrcoef_neurons: RollingCorrCoef | None = None,
+    corrcoef_encoder: RollingCorrCoef | None = None,
+    corrcoef_encoder_B: RollingCorrCoef | None = None,
 ) -> Float[Tensor, "batch seq feats"]:
     """
     This function computes the feature activations, given a bunch of model data. It also updates the rolling correlation
@@ -131,17 +130,17 @@ def compute_feat_acts(
 @torch.inference_mode()
 def parse_feature_data(
     tokens: Int[Tensor, "batch seq"],
-    feature_indices: Union[int, list[int]],
+    feature_indices: int | list[int],
     all_feat_acts: Float[Tensor, "... feats"],
     feature_resid_dir: Float[Tensor, "feats d_model"],
     all_resid_post: Float[Tensor, "... d_model"],
     W_U: Float[Tensor, "d_model d_vocab"],
     cfg: SaeVisConfig,
-    feature_out_dir: Optional[Float[Tensor, "feats d_out"]] = None,
-    corrcoef_neurons: Optional[RollingCorrCoef] = None,
-    corrcoef_encoder: Optional[RollingCorrCoef] = None,
-    corrcoef_encoder_B: Optional[RollingCorrCoef] = None,
-    progress: Optional[list[tqdm]] = None,
+    feature_out_dir: Float[Tensor, "feats d_out"] | None = None,
+    corrcoef_neurons: RollingCorrCoef | None = None,
+    corrcoef_encoder: RollingCorrCoef | None = None,
+    corrcoef_encoder_B: RollingCorrCoef | None = None,
+    progress: list[tqdm] | None = None,
 ) -> tuple[SaeVisData, dict[str, float]]:
     """Convert generic activation data into a SaeVisData object, which can be used to create the feature-centric vis.
 
@@ -398,12 +397,12 @@ def parse_feature_data(
 @torch.inference_mode()
 def _get_feature_data(
     encoder: AutoEncoder,
-    encoder_B: Optional[AutoEncoder],
+    encoder_B: AutoEncoder | None,
     model: TransformerLensWrapper,
     tokens: Int[Tensor, "batch seq"],
-    feature_indices: Union[int, list[int]],
+    feature_indices: int | list[int],
     cfg: SaeVisConfig,
-    progress: Optional[list[tqdm]] = None,
+    progress: list[tqdm] | None = None,
 ) -> tuple[SaeVisData, dict[str, float]]:
     """
     Gets data that will be used to create the sequences in the feature-centric HTML visualisation.
@@ -547,7 +546,7 @@ def get_feature_data(
     model: HookedTransformer,
     tokens: Int[Tensor, "batch seq"],
     cfg: SaeVisConfig,
-    encoder_B: Optional[AutoEncoder] = None,
+    encoder_B: AutoEncoder | None = None,
 ) -> SaeVisData:
     """
     This is the main function which users will run to generate the feature visualization data. It batches this
@@ -686,8 +685,18 @@ def get_sequences_data(
 
     # Get buffer, s.t. we're looking for bold tokens in the range `buffer[0] : buffer[1]`. For each bold token, we need
     # to see `seq_cfg.buffer[0]+1` behind it (plus 1 because we need the prev token to compute loss effect), and we need
-    # to see `seq_cfg.buffer[1]` ahead of it
-    buffer = (seq_cfg.buffer[0] + 1, -seq_cfg.buffer[1])
+    # to see `seq_cfg.buffer[1]` ahead of it.
+    buffer = (
+        (seq_cfg.buffer[0] + 1, -seq_cfg.buffer[1])
+        if seq_cfg.buffer is not None
+        else None
+    )
+    _batch_size, seq_length = tokens.shape
+    padded_buffer_width = (
+        seq_cfg.buffer[0] + seq_cfg.buffer[1] + 2
+        if seq_cfg.buffer is not None
+        else seq_length
+    )
 
     # Get the top-activating tokens
     indices = k_largest_indices(feat_acts, k=seq_cfg.top_acts_group_size, buffer=buffer)
@@ -710,30 +719,48 @@ def get_sequences_data(
                 f"INTERVAL {lower:.3f} - {upper:.3f}<br>CONTAINS {pct:.3%}"
             ] = indices
 
-    # Concat all the indices together (in the next steps we do all groups at once)
-    indices_bold = torch.concat(list(indices_dict.values())).cpu()  # shape [batch 2]
+    # Concat all the indices together (in the next steps we do all groups at once). Shape of this object is [n_bold 2],
+    # i.e. the [i, :]-th element are the batch and sequence dimensions for the i-th bold token.
+    indices_bold = torch.concat(list(indices_dict.values())).cpu()
+    n_bold = indices_bold.shape[0]
 
     # ! (2) Get the buffer indices
 
-    # Get the buffer indices, by adding a broadcasted arange object. At this point, indices_buf contains 1 more token
-    # than the length of the sequences we'll see (because it also contains the token before the sequence starts).
-    buffer_tensor = torch.arange(
-        -seq_cfg.buffer[0] - 1, seq_cfg.buffer[1] + 1, device=indices_bold.device
-    )
-    indices_buf = einops.repeat(
-        indices_bold,
-        "batch two -> batch seq two",
-        seq=seq_cfg.buffer[0] + seq_cfg.buffer[1] + 2,
-    )
-    indices_buf = torch.stack(
-        [indices_buf[..., 0], indices_buf[..., 1] + buffer_tensor], dim=-1
-    )
+    if seq_cfg.buffer is not None:
+        # Get the buffer indices, by adding a broadcasted arange object. At this point, indices_buf contains 1 more token
+        # than the length of the sequences we'll see (because it also contains the token before the sequence starts).
+        buffer_tensor = torch.arange(
+            -seq_cfg.buffer[0] - 1, seq_cfg.buffer[1] + 1, device=indices_bold.device
+        )
+        indices_buf = einops.repeat(
+            indices_bold,
+            "n_bold two -> n_bold seq two",
+            seq=seq_cfg.buffer[0] + seq_cfg.buffer[1] + 2,
+        )
+        indices_buf = torch.stack(
+            [indices_buf[..., 0], indices_buf[..., 1] + buffer_tensor], dim=-1
+        )
+    else:
+        # If we don't specify a sequence, then do all of the indices.
+        indices_buf = torch.stack(
+            [
+                einops.repeat(
+                    indices_bold[:, 0], "n_bold -> n_bold seq", seq=seq_length
+                ),  # batch indices of bold tokens
+                einops.repeat(
+                    torch.arange(seq_length), "seq -> n_bold seq", n_bold=n_bold
+                ),  # all sequence indices
+            ],
+            dim=-1,
+        )
+
+    assert indices_buf.shape == (n_bold, padded_buffer_width, 2)
 
     # ! (3) Extract the token IDs, feature activations & residual stream values for those positions
 
     # Get the tokens which will be in our sequences
     token_ids = eindex(
-        tokens, indices_buf[:, 1:], "[batch seq 0] [batch seq 1]"
+        tokens, indices_buf[:, 1:], "[n_bold seq 0] [n_bold seq 1]"
     )  # shape [batch buf]
 
     # Now, we split into cases depending on whether we're computing the buffer or not. One kinda weird thing: we get
@@ -742,29 +769,31 @@ def get_sequences_data(
     # we split on cases here.
     if seq_cfg.compute_buffer:
         feat_acts_buf = eindex(
-            feat_acts, indices_buf, "[batch buf_plus1 0] [batch buf_plus1 1]"
+            feat_acts,
+            indices_buf,
+            "[n_bold buf_plus1 0] [n_bold buf_plus1 1] -> n_bold buf_plus1",
         )
         feat_acts_pre_ablation = feat_acts_buf[:, :-1]
         feat_acts_coloring = feat_acts_buf[:, 1:]
         resid_post_pre_ablation = eindex(
-            resid_post, indices_buf[:, :-1], "[batch buf 0] [batch buf 1] d_model"
+            resid_post, indices_buf[:, :-1], "[n_bold buf 0] [n_bold buf 1] d_model"
         )
         # The tokens we'll use to index correct logits are the same as the ones which will be in our sequence
         correct_tokens = token_ids
     else:
         feat_acts_pre_ablation = eindex(
-            feat_acts, indices_bold, "[batch 0] [batch 1]"
+            feat_acts, indices_bold, "[n_bold 0] [n_bold 1]"
         ).unsqueeze(1)
         feat_acts_coloring = feat_acts_pre_ablation
         resid_post_pre_ablation = eindex(
-            resid_post, indices_bold, "[batch 0] [batch 1] d_model"
+            resid_post, indices_bold, "[n_bold 0] [n_bold 1] d_model"
         ).unsqueeze(1)
         # The tokens we'll use to index correct logits are the ones after bold
         indices_bold_next = torch.stack(
             [indices_bold[:, 0], indices_bold[:, 1] + 1], dim=-1
         )
         correct_tokens = eindex(
-            tokens, indices_bold_next, "[batch 0] [batch 1]"
+            tokens, indices_bold_next, "[n_bold 0] [n_bold 1]"
         ).unsqueeze(1)
 
     # ! (4) Compute the logit effect if this feature is ablated
@@ -843,7 +872,7 @@ def parse_prompt_data(
     feature_resid_dir: Float[Tensor, "feats d_model"],
     resid_post: Float[Tensor, "seq d_model"],
     W_U: Float[Tensor, "d_model d_vocab"],
-    feature_idx: Optional[list[int]] = None,
+    feature_idx: list[int] | None = None,
     num_top_features: int = 10,
 ) -> dict[str, tuple[list[int], list[str]]]:
     """

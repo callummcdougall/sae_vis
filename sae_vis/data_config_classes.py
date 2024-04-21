@@ -1,5 +1,5 @@
 from dataclasses import asdict, dataclass, field
-from typing import Any, Iterable, Iterator, Literal, Optional, Union
+from typing import Any, Iterable, Iterator, Literal
 
 from dataclasses_json import dataclass_json
 from rich import print as rprint
@@ -7,8 +7,8 @@ from rich.table import Table
 from rich.tree import Tree
 
 SEQUENCES_CONFIG_HELP = dict(
-    buffer="How many tokens to add as context to each sequence. The tokens chosen for the top acts / quantile groups \
-can't be outside the buffer range.",
+    buffer="How many tokens to add as context to each sequence, on each side. The tokens chosen for the top acts / \
+quantile groups can't be outside the buffer range. If None, we use the entire sequence as context.",
     compute_buffer="If False, then we don't compute the loss effect, activations, or any other data for tokens \
 other than the bold tokens in our sequences (saving time).",
     n_quantiles="Number of quantile groups for the sequences. If zero, we only show top activations, no quantile \
@@ -45,7 +45,7 @@ FEATURE_TABLES_CONFIG_HELP = dict(
 
 @dataclass
 class BaseComponentConfig:
-    def data_is_contained_in(self, other) -> bool:
+    def data_is_contained_in(self, other: "BaseComponentConfig") -> bool:
         """
         This returns False only when the data that was computed based on `other` wouldn't be enough to show the data
         that was computed based on `self`. For instance, if `self` was a config object with 10 rows, and `other` had
@@ -70,7 +70,7 @@ class PromptConfig(BaseComponentConfig):
 
 @dataclass
 class SequencesConfig(BaseComponentConfig):
-    buffer: tuple[int, int] = (5, 5)
+    buffer: tuple[int, int] | None = (5, 5)
     compute_buffer: bool = True
     n_quantiles: int = 10
     top_acts_group_size: int = 20
@@ -79,12 +79,16 @@ class SequencesConfig(BaseComponentConfig):
     stack_mode: Literal["stack-all", "stack-quantiles", "stack-none"] = "stack-all"
     hover_below: bool = True
 
-    def data_is_contained_in(self, other) -> bool:
+    def data_is_contained_in(self, other: BaseComponentConfig) -> bool:
         assert isinstance(other, self.__class__)
         return all(
             [
-                self.buffer[0] <= other.buffer[0],  # the buffer needs to be <=
-                self.buffer[1] <= other.buffer[1],
+                self.buffer is None
+                or (
+                    other.buffer is not None and self.buffer[0] <= other.buffer[0]
+                ),  # the buffer needs to be <=
+                self.buffer is None
+                or (other.buffer is not None and self.buffer[1] <= other.buffer[1]),
                 int(self.compute_buffer)
                 <= int(
                     other.compute_buffer
@@ -118,7 +122,7 @@ class SequencesConfig(BaseComponentConfig):
 class ActsHistogramConfig(BaseComponentConfig):
     n_bins: int = 50
 
-    def data_is_contained_in(self, other) -> bool:
+    def data_is_contained_in(self, other: BaseComponentConfig) -> bool:
         assert isinstance(other, self.__class__)
         return self.n_bins == other.n_bins
 
@@ -131,7 +135,7 @@ class ActsHistogramConfig(BaseComponentConfig):
 class LogitsHistogramConfig(BaseComponentConfig):
     n_bins: int = 50
 
-    def data_is_contained_in(self, other) -> bool:
+    def data_is_contained_in(self, other: BaseComponentConfig) -> bool:
         assert isinstance(other, self.__class__)
         return self.n_bins == other.n_bins
 
@@ -144,7 +148,7 @@ class LogitsHistogramConfig(BaseComponentConfig):
 class LogitsTableConfig(BaseComponentConfig):
     n_rows: int = 10
 
-    def data_is_contained_in(self, other) -> bool:
+    def data_is_contained_in(self, other: BaseComponentConfig) -> bool:
         assert isinstance(other, self.__class__)
         return self.n_rows <= other.n_rows
 
@@ -161,7 +165,7 @@ class FeatureTablesConfig(BaseComponentConfig):
     correlated_features_table: bool = True
     correlated_b_features_table: bool = False
 
-    def data_is_contained_in(self, other) -> bool:
+    def data_is_contained_in(self, other: BaseComponentConfig) -> bool:
         assert isinstance(other, self.__class__)
         return all(
             [
@@ -178,21 +182,21 @@ class FeatureTablesConfig(BaseComponentConfig):
         return FEATURE_TABLES_CONFIG_HELP
 
 
-GenericComponentConfig = Union[
-    PromptConfig,
-    SequencesConfig,
-    ActsHistogramConfig,
-    LogitsHistogramConfig,
-    LogitsTableConfig,
-    FeatureTablesConfig,
-]
+GenericComponentConfig = (
+    PromptConfig
+    | SequencesConfig
+    | ActsHistogramConfig
+    | LogitsHistogramConfig
+    | LogitsTableConfig
+    | FeatureTablesConfig
+)
 
 
 class Column:
     def __init__(
         self,
         *args: GenericComponentConfig,
-        width: Optional[int] = None,
+        width: int | None = None,
     ):
         self.components = list(args)
         self.width = width
@@ -417,9 +421,9 @@ OOMs.",
 @dataclass
 class SaeVisConfig:
     # Data
-    hook_point: Optional[str] = None
-    features: Optional[int | Iterable[int]] = None
-    batch_size: Optional[int] = None
+    hook_point: str | None = None
+    features: int | Iterable[int] | None = None
+    batch_size: int | None = None
     minibatch_size_features: int = 256
     minibatch_size_tokens: int = 64
 
@@ -432,10 +436,10 @@ class SaeVisConfig:
     )
 
     # Misc
-    seed: Optional[int] = 0
+    seed: int | None = 0
     verbose: bool = False
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Used for type hinting (the actual method comes from the `dataclass_json` decorator)."""
         ...
 
