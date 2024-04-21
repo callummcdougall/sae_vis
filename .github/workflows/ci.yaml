@@ -20,3 +20,38 @@ jobs:
         run: poetry run ruff check
       - name: check formatting
         run: poetry run ruff format --check
+      - name: check types
+        run: poetry run pyright
+      - name: build
+        run: poetry build
+
+  release:
+    needs: build
+    permissions:
+      contents: write
+      id-token: write
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, 'chore(release):')
+    runs-on: ubuntu-latest
+    concurrency: release
+    environment:
+      name: pypi
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Semantic Release
+        id: release
+        uses: python-semantic-release/python-semantic-release@v8.0.7
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        if: steps.release.outputs.released == 'true'
+      - name: Publish package distributions to GitHub Releases
+        uses: python-semantic-release/upload-to-gh-release@main
+        if: steps.release.outputs.released == 'true'
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}

@@ -5,14 +5,11 @@ from dataclasses import dataclass, field
 from typing import (
     Any,
     Callable,
-    Dict,
-    List,
+    Iterable,
     Literal,
-    Optional,
-    Tuple,
+    Sequence,
     Type,
     TypeVar,
-    Union,
     overload,
 )
 
@@ -25,6 +22,7 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from tqdm import tqdm
 from transformer_lens import utils
+from transformers import PreTrainedTokenizerBase
 
 T = TypeVar("T")
 
@@ -54,7 +52,9 @@ Arr = np.ndarray
 MAIN = __name__ == "__main__"
 
 
-def create_iterator(iterator, verbose: bool, desc: Optional[str] = None):
+def create_iterator(
+    iterator: Iterable[T], verbose: bool, desc: str | None = None
+) -> Iterable[T]:
     """
     Returns an iterator, useful for reducing code repetition.
     """
@@ -65,7 +65,7 @@ def k_largest_indices(
     x: Float[Tensor, "rows cols"],
     k: int,
     largest: bool = True,
-    buffer: Tuple[int, int] | None = (5, -5),
+    buffer: tuple[int, int] | None = (5, -5),
 ) -> Int[Tensor, "k 2"]:
     """
     Args:
@@ -109,8 +109,8 @@ def sample_unique_indices(
 def random_range_indices(
     x: Float[Tensor, "batch seq"],
     k: int,
-    bounds: Tuple[float, float],
-    buffer: Tuple[int, int] | None = (5, -5),
+    bounds: tuple[float, float],
+    buffer: tuple[int, int] | None = (5, -5),
 ) -> Int[Tensor, "k 2"]:
     """
     Args:
@@ -168,7 +168,7 @@ def random_range_indices(
 
 
 def get_decode_html_safe_fn(
-    tokenizer, html: bool = False
+    tokenizer: PreTrainedTokenizerBase, html: bool = False
 ) -> Callable[[int | list[int]], str | list[str]]:
     vocab_dict = {v: k for k, v in tokenizer.vocab.items()}  # type: ignore
 
@@ -293,13 +293,13 @@ def to_str_tokens(
 @overload
 def to_str_tokens(
     decode_fn: Callable[[int | list[int]], str | list[str]],
-    tokens: List[int],
-) -> List[str]: ...
+    tokens: list[int],
+) -> list[str]: ...
 
 
 def to_str_tokens(
     decode_fn: Callable[[int | list[int]], str | list[str]],
-    tokens: Union[int, List[int], torch.Tensor],
+    tokens: int | list[int] | torch.Tensor,
 ) -> str | Any:
     """
     Helper function which converts tokens to their string representations, but (if tokens is a tensor) keeps
@@ -337,13 +337,13 @@ class TopK:
         tensor: Float[Tensor, "... d"],
         k: int,
         largest: bool = True,
-        tensor_mask: Optional[Bool[Tensor, "..."]] = None,
+        tensor_mask: Bool[Tensor, "..."] | None = None,
     ):
         self.k = k
         self.largest = largest
         self.values, self.indices = self.topk(tensor, tensor_mask)
 
-    def __getitem__(self, item) -> "TopK":
+    def __getitem__(self, item: int) -> "TopK":
         new_topk = TopK.__new__(TopK)
         new_topk.k = self.k
         new_topk.largest = self.largest
@@ -359,7 +359,7 @@ class TopK:
         return self.values.ndim
 
     @property
-    def shape(self) -> Tuple[int]:
+    def shape(self) -> tuple[int]:
         return tuple(self.values.shape)  # type: ignore
 
     def numel(self) -> int:
@@ -368,8 +368,8 @@ class TopK:
     def topk(
         self,
         tensor: Float[Tensor, "... d"],
-        tensor_mask: Optional[Bool[Tensor, "..."]] = None,
-    ) -> Tuple[Arr, Arr]:
+        tensor_mask: Bool[Tensor, "..."] | None = None,
+    ) -> tuple[Arr, Arr]:
         """
         This is an efficient version of `torch.topk(..., dim=-1)`. It saves time by only doing the topk calculation over
         the bits of `tensor` where `tensor_mask=True`. This is useful when `tensor` is very sparse, e.g. it has shape
@@ -403,14 +403,14 @@ class TopK:
         return utils.to_numpy(topk_values), utils.to_numpy(topk_indices)
 
 
-def merge_lists(*lists):
+def merge_lists(*lists: Iterable[T]) -> list[T]:
     """
     Merges a bunch of lists into a single list.
     """
     return [item for sublist in lists for item in sublist]
 
 
-def extract_and_remove_scripts(html_content: str) -> Tuple[str, str]:
+def extract_and_remove_scripts(html_content: str) -> tuple[str, str]:
     """
     Extracts JavaScript from script tags in the HTML content, and returns it as a single string,
     along with the original content with the script tags removed.
@@ -431,10 +431,10 @@ def extract_and_remove_scripts(html_content: str) -> Tuple[str, str]:
 
 
 def pad_with_zeros(
-    x: List[float],
+    x: list[float],
     n: int,
     side: Literal["left", "right"] = "left",
-) -> List[float]:
+) -> list[float]:
     """
     Pads a list with zeros to make it the correct length.
     """
@@ -451,17 +451,17 @@ def pad_with_zeros(
 # This defines the number of decimal places we'll use. It's assumed to refer to values in the range [0, 1] rather than
 # pct, e.g. precision of 5 would be 99.497% = 0.99497. In other words, decimal_places = precision - 2.
 
-SYMMETRIC_RANGES_AND_PRECISIONS = [
-    [[0.0, 0.01], 5],
-    [[0.01, 0.05], 4],
-    [[0.05, 0.95], 3],
-    [[0.95, 0.99], 4],
-    [[0.99, 1.0], 5],
+SYMMETRIC_RANGES_AND_PRECISIONS: list[tuple[list[float], int]] = [
+    ([0.0, 0.01], 5),
+    ([0.01, 0.05], 4),
+    ([0.05, 0.95], 3),
+    ([0.95, 0.99], 4),
+    ([0.99, 1.0], 5),
 ]
-ASYMMETRIC_RANGES_AND_PRECISIONS = [
-    [[0.0, 0.95], 3],
-    [[0.95, 0.99], 4],
-    [[0.99, 1.0], 5],
+ASYMMETRIC_RANGES_AND_PRECISIONS: list[tuple[list[float], int]] = [
+    ([0.0, 0.95], 3),
+    ([0.95, 0.99], 4),
+    ([0.99, 1.0], 5),
 ]
 
 
@@ -479,15 +479,15 @@ class FeatureStatistics:
     """
 
     # Stats: max, frac_nonzero, skew, kurtosis
-    max: List[float] = field(default_factory=list)
-    frac_nonzero: List[float] = field(default_factory=list)
-    skew: List[float] = field(default_factory=list)
-    kurtosis: List[float] = field(default_factory=list)
+    max: list[float] = field(default_factory=list)
+    frac_nonzero: list[float] = field(default_factory=list)
+    skew: list[float] = field(default_factory=list)
+    kurtosis: list[float] = field(default_factory=list)
 
     # Quantile data
-    quantile_data: List[List[float]] = field(default_factory=list)
-    quantiles: List[float] = field(default_factory=list)
-    ranges_and_precisions: list = field(
+    quantile_data: list[list[float]] = field(default_factory=list)
+    quantiles: list[float] = field(default_factory=list)
+    ranges_and_precisions: list[tuple[list[float], int]] = field(
         default_factory=lambda: ASYMMETRIC_RANGES_AND_PRECISIONS
     )
 
@@ -495,7 +495,7 @@ class FeatureStatistics:
     def aggdata(
         self,
         precision: int = 5,
-    ) -> Dict[str, List[float]]:
+    ) -> dict[str, list[float]]:
         return {
             "max": [round(x, precision) for x in self.max],
             "frac_nonzero": [round(x, precision) for x in self.frac_nonzero],
@@ -506,8 +506,10 @@ class FeatureStatistics:
     @classmethod
     def create(
         cls,
-        data: Optional[Float[Tensor, "batch data"]] = None,
-        ranges_and_precisions: list = ASYMMETRIC_RANGES_AND_PRECISIONS,
+        data: Float[Tensor, "batch data"] | None = None,
+        ranges_and_precisions: list[
+            tuple[list[float], int]
+        ] = ASYMMETRIC_RANGES_AND_PRECISIONS,
     ) -> "FeatureStatistics":
         # Generate quantiles from the ranges_and_precisions list
         quantiles = []
@@ -572,8 +574,8 @@ class FeatureStatistics:
     def get_quantile(
         self,
         values: Float[Tensor, "batch *data_dim"],
-        batch_indices: Optional[List[int]] = None,
-    ) -> Tuple[Float[Tensor, "batch *data_dim"], Int[Tensor, "batch *data_dim"]]:
+        batch_indices: list[int] | None = None,
+    ) -> tuple[Float[Tensor, "batch *data_dim"], Int[Tensor, "batch *data_dim"]]:
         """
         Args:
             values:
@@ -592,8 +594,8 @@ class FeatureStatistics:
                 The precision of the quantiles (i.e. how many decimal places we're accurate to).
         """
         rp = self.ranges_and_precisions
-        ranges = torch.tensor([r[0] for (r, p) in rp] + [1.0]).to(values.device)
-        precisions = torch.tensor([rp[0][1]] + [p for (r, p) in rp] + [rp[-1][1]]).to(
+        ranges = torch.tensor([r[0] for (r, _p) in rp] + [1.0]).to(values.device)
+        precisions = torch.tensor([rp[0][1]] + [p for (_r, p) in rp] + [rp[-1][1]]).to(
             values.device
         )
 
@@ -725,7 +727,9 @@ def apply_indent(
 # %%
 
 
-def deep_union(dict1: dict, dict2: dict, path: str = "") -> dict:
+def deep_union(
+    dict1: dict[Any, Any], dict2: dict[Any, Any], path: str = ""
+) -> dict[Any, Any]:
     """
     Returns a deep union of dictionaries (recursive operation). In other words, if `dict1` and `dict2` have the same
     keys then the value of that key will be the deep union of the values.
@@ -748,7 +752,7 @@ def deep_union(dict1: dict, dict2: dict, path: str = "") -> dict:
             {"x": {"y": {"w": 2}}},
         ) == {"x": {"y": {"z": 1, "w": 2}}}
 
-        # List concatenation
+        # list concatenation
         assert deep_union(
             {"x": [1, 2]},
             {"x": [3, 4]},
@@ -800,7 +804,7 @@ if MAIN:
         {"x": {"y": {"w": 2}}},
     ) == {"x": {"y": {"z": 1, "w": 2}}}
 
-    # List concatenation
+    # list concatenation
     assert deep_union(
         {"x": [1, 2]},
         {"x": [3, 4]},
@@ -927,7 +931,7 @@ class RollingCorrCoef:
 
     def corrcoef(
         self,
-    ) -> Tuple[Float[Tensor, "X Y"], Float[Tensor, "X Y"]]:
+    ) -> tuple[Float[Tensor, "X Y"], Float[Tensor, "X Y"]]:
         """
         Computes the correlation coefficients between x and y, using the formulae given in the class docstring.
         """
@@ -966,7 +970,7 @@ class RollingCorrCoef:
         self,
         k: int,
         largest: bool = True,
-    ) -> Tuple[list[list[int]], list[list[float]], list[list[float]]]:
+    ) -> tuple[list[list[int]], list[list[float]], list[list[float]]]:
         """
         Takes topk of the pearson corrcoefs over the y-dimension (e.g. giving us the most correlated neurons or most
         correlated encoder-B features for each encoder feature).
@@ -1022,7 +1026,7 @@ class HistogramData:
     bar_heights: list[float] = field(default_factory=list)
     bar_values: list[float] = field(default_factory=list)
     tick_vals: list[float] = field(default_factory=list)
-    title: Optional[str] = None
+    title: str | None = None
 
     @classmethod
     def from_data(
@@ -1030,13 +1034,13 @@ class HistogramData:
         data: Tensor,
         n_bins: int,
         tickmode: Literal["ints", "5 ticks"],
-        title: Optional[str],
+        title: str | None,
     ) -> T:
         """
         Args:
             data: 1D tensor of data which will be turned into histogram
             n_bins: Number of bins in the histogram
-            line_posn: List of possible positions of vertical lines we want to put on the histogram
+            line_posn: list of possible positions of vertical lines we want to put on the histogram
 
         Returns a HistogramData object, with data computed from the inputs. This is to support the goal of only storing
         the minimum necessary data (and making it serializable, for JSON saving).
@@ -1080,7 +1084,7 @@ class HistogramData:
             )
             tick_vals = [round(t, 1) for t in tick_vals]
 
-        return cls(
+        return cls(  # type: ignore
             bar_heights=bar_heights,
             bar_values=bar_values,
             tick_vals=tick_vals,
@@ -1091,18 +1095,18 @@ class HistogramData:
 # %%
 
 
-def max_or_1(myList, abs: bool = False) -> float | int:
+def max_or_1(mylist: Sequence[float | int], abs: bool = False) -> float | int:
     """
     Returns max of a list, or 1 if the list is empty.
 
     Args:
-        myList: List of numbers
+        mylist: list of numbers
         abs: If True, then we take the max of the absolute values of the list
     """
-    if len(myList) == 0:
+    if len(mylist) == 0:
         return 1
 
     if abs:
-        return max(max(x, -x) for x in myList)
+        return max(max(x, -x) for x in mylist)
     else:
-        return max(myList)
+        return max(mylist)

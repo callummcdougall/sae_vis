@@ -45,7 +45,7 @@ To cite this work, you can use this bibtex citation:
 
 This project is uses [Poetry](https://python-poetry.org/) for dependency management. After cloning the repo, install dependencies with `poetry install`.
 
-This project uses [Ruff](https://docs.astral.sh/ruff/) for formatting and linting. If you submit a PR, make sure that your code passes all checks. You can run all check with `Make check-all`.
+This project uses [Ruff](https://docs.astral.sh/ruff/) for formatting and linting, and [Pyright](https://github.com/microsoft/pyright) for type-checking. If you submit a PR, make sure that your code passes all checks. You can run all check with `make check-all`.
 
 # Version history (recording started at `0.2.9`)
 
@@ -56,5 +56,5 @@ This project uses [Ruff](https://docs.astral.sh/ruff/) for formatting and lintin
 - `0.2.13` - add to dependencies, and fix SAELens section
 - `0.2.14` - fix mistake in dependencies
 - `0.2.15` - refactor to support eventual scatterplot-based feature browser, fix `&rsquo;` HTML
-- `0.2.16` - fix sae-lens compatibility & type checking
-- `0.2.17` - compatibility with github releases
+- `0.2.16` - allow disabling buffer in feature generation, fix demo notebook, fix sae-lens compatibility & type checking
+- `0.2.17` - use main branch of `sae-lens`
