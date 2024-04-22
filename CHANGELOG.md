@@ -2,7 +2,36 @@
 
 
 
-## v0.0.0 (2024-04-21)
+## v0.2.18 (2024-04-22)
+
+### Fix
+
+* fix: remove circular dep with sae lens ([`1dd9f6c`](https://github.com/callummcdougall/sae_vis/commit/1dd9f6cd22f879e8d6904ba72f3e52b4344433cd))
+
+### Unknown
+
+* Merge pull request #43 from callummcdougall/move_saelens_dep
+
+Remove dependency on saelens from pyproject, add to demo.ipynb ([`147d87e`](https://github.com/callummcdougall/sae_vis/commit/147d87ee9534d30e764851cbe73aadb5783d2515))
+
+* Add missing matplotlib ([`572a3cc`](https://github.com/callummcdougall/sae_vis/commit/572a3cc79709a14117bbeafb871a33f0107600d8))
+
+* Remove dependency on saelens from pyproject, add to demo.ipynb ([`1e6f3cf`](https://github.com/callummcdougall/sae_vis/commit/1e6f3cf9b2bcfb381a73d9333581c430faa531fd))
+
+* Merge branch &#39;main&#39; of https://github.com/callummcdougall/sae_vis ([`4e7a24c`](https://github.com/callummcdougall/sae_vis/commit/4e7a24c37444f11d718035eede68ac728d949a20))
+
+* fix conflicts ([`ea3d624`](https://github.com/callummcdougall/sae_vis/commit/ea3d624013b9aa7cbd2d6eaa7212a1f7c4ee8e28))
+
+* Merge pull request #41 from callummcdougall/allow_disable_buffer
+
+oops I forgot to switch back to main before pushing ([`1312cd0`](https://github.com/callummcdougall/sae_vis/commit/1312cd09d6e274b1163e79d2ac01f2df54c65157))
+
+* Merge branch &#39;main&#39; into allow_disable_buffer ([`e7edf5a`](https://github.com/callummcdougall/sae_vis/commit/e7edf5a9bae4714bf4983ce6a19a0fe6fdf1f118))
+
+* 16 ([`64e7018`](https://github.com/callummcdougall/sae_vis/commit/64e701849570d9e172dc065812c9a3e7149a9176))
+
+
+## v0.2.17 (2024-04-21)
 
 ### Chore
 
@@ -13,6 +42,8 @@
 * Merge pull request #40 from chanind/semantic-release-autodeploy
 
 chore: setting up semantic-release for auto-deploy ([`a4d44d1`](https://github.com/callummcdougall/sae_vis/commit/a4d44d1a0e86055fb82ef41f51f0adbb7868df3c))
+
+* version 0.2.16 ([`afca0be`](https://github.com/callummcdougall/sae_vis/commit/afca0be8826e0c007b5730fa9fa18454699d16a3))
 
 * Merge pull request #38 from chanind/type-checking
 
@@ -29,6 +60,8 @@ FIX: SAELens new format has &#34;scaling_factor&#34; key, which causes assert to
 * Allow SAELens autoencoder keys to be superset of required keys, instead of exact match ([`6852170`](https://github.com/callummcdougall/sae_vis/commit/6852170d55e7d3cf22632c5807cfab219516da98))
 
 * enabling type checking with Pyright ([`05d14ea`](https://github.com/callummcdougall/sae_vis/commit/05d14eafea707d3db81e78b4be87199087cb8e37))
+
+* Fix version ([`5a43916`](https://github.com/callummcdougall/sae_vis/commit/5a43916cbd9836396f051f7a258fdca8664e05e9))
 
 * format ([`8f1506b`](https://github.com/callummcdougall/sae_vis/commit/8f1506b6eb7dc0a2d4437d2aa23a0898c46a156d))
 
