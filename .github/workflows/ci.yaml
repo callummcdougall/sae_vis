@@ -22,6 +22,8 @@ jobs:
         run: poetry run ruff format --check
       - name: check types
         run: poetry run pyright
+      - name: test
+        run: poetry run pytest
       - name: build
         run: poetry build
 

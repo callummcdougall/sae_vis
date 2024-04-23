@@ -7,6 +7,10 @@ lint:
 	poetry run ruff format --check .
 	poetry run pyright .
 
+test:
+	poetry run pytest
+
 check-all:
 	make format
 	make lint
+	make test
