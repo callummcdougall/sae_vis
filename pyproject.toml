@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "sae-vis"
-version = "0.2.17"
+version = "0.2.18"
 description = "Open-source SAE visualizer, based on Anthropic's published visualizer."
 authors = ["Callum McDougall <cal.s.mcdougall@gmail.com>"]
 readme = "README.md"
@@ -13,10 +13,10 @@ einops = "^0.7.0"
 datasets = "^2.0.0"
 dataclasses-json = "^0.6.4"
 jaxtyping = "^0.2.28"
-sae-lens = "^0.5.0"
 transformer-lens = "^1.0.0"
 eindex-callum = "^0.1.0"
 rich = "^13.7.1"
+matplotlib = "^3.8.4"
 
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.3.7"
@@ -60,3 +60,11 @@ reportPrivateUsage = "none"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.semantic_release]
+version_variables = [
+    "sae_vis/__init__.py:__version__",
+    "pyproject.toml:version",
+]
+branch = "main"
+build_command = "pip install poetry && poetry build"

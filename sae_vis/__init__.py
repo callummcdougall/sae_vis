@@ -1,4 +1,4 @@
-__version__ = "0.1"
+__version__ = "0.2.18"
 
 from .data_fetching_fns import *
 from .data_storing_fns import *
