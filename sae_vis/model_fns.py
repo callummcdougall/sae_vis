@@ -51,6 +51,8 @@ class AutoEncoderConfig:
 
     l1_coeff: float = 3e-4
 
+    apply_b_dec_to_input: bool = True
+
     def __post_init__(self):
         assert (
             int(self.d_hidden is None) + int(self.dict_mult is None) == 1
@@ -81,7 +83,7 @@ class AutoEncoder(nn.Module):
         self.W_dec.data[:] = self.W_dec / self.W_dec.norm(dim=-1, keepdim=True)
 
     def forward(self, x: torch.Tensor):
-        x_cent = x - self.b_dec
+        x_cent = x - self.b_dec * self.cfg.apply_b_dec_to_input
         acts = F.relu(x_cent @ self.W_enc + self.b_enc)
         x_reconstruct = acts @ self.W_dec + self.b_dec
         l2_loss = (x_reconstruct.float() - x.float()).pow(2).sum(-1).mean(0)
