@@ -85,7 +85,7 @@ def compute_feat_acts(
     feature_bias = encoder.b_enc[feature_idx]  # (feats,)
 
     # Calculate & store feature activations (we need to store them so we can get the sequence & histogram vis later)
-    x_cent = model_acts - encoder.b_dec
+    x_cent = model_acts -  encoder.b_dec * encoder.cfg.apply_b_dec_to_input
     feat_acts_pre = einops.einsum(
         x_cent, feature_act_dir, "batch seq d_in, d_in feats -> batch seq feats"
     )
@@ -110,7 +110,7 @@ def compute_feat_acts(
         assert (
             encoder_B is not None
         ), "Error: you need to supply an encoder-B object if you want to calculate encoder-B feature activations."
-        x_cent_B = model_acts - encoder_B.b_dec
+        x_cent_B = model_acts - encoder_B.b_dec * encoder_B.cfg.apply_b_dec_to_input
         feat_acts_pre_B = einops.einsum(
             x_cent_B,
             encoder_B.W_enc,
