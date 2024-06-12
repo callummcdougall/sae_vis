@@ -2,6 +2,47 @@
 
 
 
+## v0.2.19 (2024-06-12)
+
+### Chore
+
+* chore: setting up pytest ([`2079d00`](https://github.com/callummcdougall/sae_vis/commit/2079d00911d1a00ee19cde478b5cab61ca9c0495))
+
+### Fix
+
+* fix: running &#39;make format&#39; to fix formatting ([`4c70b63`](https://github.com/callummcdougall/sae_vis/commit/4c70b63297453fb25981fea1386f8ac0122f4f94))
+
+### Unknown
+
+* Merge pull request #51 from chanind/fix-formatting
+
+fix: running &#39;make format&#39; to fix formatting ([`ecc2fa9`](https://github.com/callummcdougall/sae_vis/commit/ecc2fa94e596ca68551913aa4f320f72c51f3b2c))
+
+* Merge pull request #49 from shehper/pre-encoder-bias
+
+reformatted sae_vis/data_fetching_fns.py to comply with linting rules ([`a493e42`](https://github.com/callummcdougall/sae_vis/commit/a493e421355f47a09db7661ccc1fd16f7ca5924f))
+
+* Merge pull request #50 from afspies/patch-1
+
+Add check for valid feature_idx in save_feature_centric_vis ([`ff23f13`](https://github.com/callummcdougall/sae_vis/commit/ff23f1345aea571530faef22fb6e99a89f399de4))
+
+* Add check for valid feature_idx in save_feature_centric_vis
+
+Added an assert which ensures that the `feature_idx` specified a user is present in the `feature_data_dict`. If this is not the case then the html will still be produced but will not contain divs for the other features, which made the source of the error a bit tricky to track down. ([`4dc05ff`](https://github.com/callummcdougall/sae_vis/commit/4dc05ff04e329ee35edd268278a8b21e3b3ee73c))
+
+* reformat sae_vis/data_fetching_fns.py to comply with linting rules ([`3f6f8bf`](https://github.com/callummcdougall/sae_vis/commit/3f6f8bfe6f762db9ae86f72baa55077663296094))
+
+* Merge pull request #48 from shehper/pre-encoder-bias
+
+config to remove pre-encoder bias ([`0ca55da`](https://github.com/callummcdougall/sae_vis/commit/0ca55dac55958ed19756de8335e8d48555b1a88c))
+
+* added config for removing pre-encoder bias ([`c037c41`](https://github.com/callummcdougall/sae_vis/commit/c037c412a744acb0d4083b18b8ce2eaa0f12b8cf))
+
+* Merge pull request #44 from chanind/pytest-setup
+
+chore: setting up pytest ([`034eefa`](https://github.com/callummcdougall/sae_vis/commit/034eefa5a4163e9a560b574e2e255cd06f8f49a1))
+
+
 ## v0.2.18 (2024-04-22)
 
 ### Fix
