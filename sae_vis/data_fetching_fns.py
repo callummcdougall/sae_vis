@@ -85,7 +85,7 @@ def compute_feat_acts(
     feature_bias = encoder.b_enc[feature_idx]  # (feats,)
 
     # Calculate & store feature activations (we need to store them so we can get the sequence & histogram vis later)
-    x_cent = model_acts -  encoder.b_dec * encoder.cfg.apply_b_dec_to_input
+    x_cent = model_acts - encoder.b_dec * encoder.cfg.apply_b_dec_to_input
     feat_acts_pre = einops.einsum(
         x_cent, feature_act_dir, "batch seq d_in, d_in feats -> batch seq feats"
     )
