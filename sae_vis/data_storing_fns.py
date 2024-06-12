@@ -1065,7 +1065,9 @@ class SaeVisData:
         HTML_OBJ = HTML()
 
         # Set the default argument for the dropdown (i.e. when the page first loads)
-        assert feature_idx is None or feature_idx in self.feature_data_dict, "Specified feature_idx not in specified features"
+        assert (
+            feature_idx is None or feature_idx in self.feature_data_dict
+        ), "Specified feature_idx not in specified features"
         first_feature = (
             next(iter(self.feature_data_dict)) if (feature_idx is None) else feature_idx
         )
