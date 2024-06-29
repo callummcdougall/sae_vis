@@ -567,12 +567,6 @@ def get_feature_data(
     sae_vis_data = SaeVisData()
     time_logs = defaultdict(float)
 
-    # Slice tokens, if we're only doing a subset of them
-    if cfg.batch_size is None:
-        tokens = tokens
-    else:
-        tokens = tokens[: cfg.batch_size]
-
     # Get a feature list (need to deal with the case where `cfg.features` is an int, or None)
     if cfg.features is None:
         assert isinstance(encoder.cfg.d_hidden, int)
