@@ -407,8 +407,6 @@ KEY_LAYOUT_VIS = """Key:
 SAE_CONFIG_DICT = dict(
     hook_point="The hook point to use for the SAE",
     features="The set of features which we'll be gathering data for. If an integer, we only get data for 1 feature",
-    batch_size="The number of sequences we'll gather data for. If supplied then it can't be larger than `tokens[0]`, \
-if not then we use all of `tokens`",
     minibatch_size_tokens="The minibatch size we'll use to split up the full batch during forward passes, to avoid \
 OOMs.",
     minibatch_size_features="The feature minibatch size we'll use to split up our features, to avoid OOM errors",
@@ -423,7 +421,6 @@ class SaeVisConfig:
     # Data
     hook_point: str | None = None
     features: int | Iterable[int] | None = None
-    batch_size: int | None = None
     minibatch_size_features: int = 256
     minibatch_size_tokens: int = 64
 
