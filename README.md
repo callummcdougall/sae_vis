@@ -58,3 +58,6 @@ This project uses [Ruff](https://docs.astral.sh/ruff/) for formatting and lintin
 - `0.2.15` - refactor to support eventual scatterplot-based feature browser, fix `&rsquo;` HTML
 - `0.2.16` - allow disabling buffer in feature generation, fix demo notebook, fix sae-lens compatibility & type checking
 - `0.2.17` - use main branch of `sae-lens`
+- `0.2.18` - remove circular dependency with `sae-lens`
+- `0.2.19` - formatting, error-checking
+- `0.2.20` - fix bugs, remove use of `batch_size` in config
