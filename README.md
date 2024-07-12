@@ -61,3 +61,4 @@ This project uses [Ruff](https://docs.astral.sh/ruff/) for formatting and lintin
 - `0.2.18` - remove circular dependency with `sae-lens`
 - `0.2.19` - formatting, error-checking
 - `0.2.20` - fix bugs, remove use of `batch_size` in config
+- `0.2.21` - formatting

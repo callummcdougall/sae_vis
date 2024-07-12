@@ -603,7 +603,9 @@ def get_feature_data(
     assert isinstance(
         model, HookedTransformer
     ), "Error: non-HookedTransformer models are not yet supported."
-    assert isinstance(cfg.hook_point, str), f"Error: cfg.hook_point must be a string, got {cfg.hook_point}"
+    assert isinstance(
+        cfg.hook_point, str
+    ), f"Error: cfg.hook_point must be a string, got {cfg.hook_point}"
     model_wrapper = TransformerLensWrapper(model, cfg.hook_point)
 
     # For each batch of features: get new data and update global data storage objects

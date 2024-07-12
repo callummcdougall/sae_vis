@@ -1135,7 +1135,9 @@ class SaeVisData:
             prompt=prompt,
             num_top_features=num_top_features,
         )
-        assert len(scores_dict) > 0, "No active features found for any tokens in this prompt."
+        assert (
+            len(scores_dict) > 0
+        ), "No active features found for any tokens in this prompt."
 
         # Get all possible values for dropdowns
         str_toks = self.model.tokenizer.tokenize(prompt)  # type: ignore
@@ -1153,11 +1155,15 @@ class SaeVisData:
             bad_metric, bad_seq_pos = first_metric, first_seq_pos
             first_key = min(list(scores_dict.keys()))
             first_metric, first_seq_pos = first_key.split("|")
-            print("\n".join([
-                f"No features found with non-trivial {bad_metric!r} score for sequence position {bad_seq_pos}.",
-                f"List of all active metrics & seqpos: {scores_dict.keys()}",
-                f"Choosing metric {first_metric!r}, seq pos {int(first_seq_pos)} instead."
-            ]))
+            print(
+                "\n".join(
+                    [
+                        f"No features found with non-trivial {bad_metric!r} score for sequence position {bad_seq_pos}.",
+                        f"List of all active metrics & seqpos: {scores_dict.keys()}",
+                        f"Choosing metric {first_metric!r}, seq pos {int(first_seq_pos)} instead.",
+                    ]
+                )
+            )
 
         # Get tokenize function (we only need to define it once)
         assert self.model is not None
