@@ -1135,6 +1135,7 @@ class SaeVisData:
             prompt=prompt,
             num_top_features=num_top_features,
         )
+        assert len(scores_dict) > 0, "No active features found for any tokens in this prompt."
 
         # Get all possible values for dropdowns
         str_toks = self.model.tokenizer.tokenize(prompt)  # type: ignore
@@ -1145,9 +1146,18 @@ class SaeVisData:
         metric_list = ["act_quantile", "act_size", "loss_effect"]
 
         # Get default values for dropdowns
-        first_metric = "act_quantile" or metric
+        first_metric = metric or "act_quantile"
         first_seq_pos = str_toks_list[0 if seq_pos is None else seq_pos]
         first_key = f"{first_metric}|{first_seq_pos}"
+        if first_key not in scores_dict:
+            bad_metric, bad_seq_pos = first_metric, first_seq_pos
+            first_key = min(list(scores_dict.keys()))
+            first_metric, first_seq_pos = first_key.split("|")
+            print("\n".join([
+                f"No features found with non-trivial {bad_metric!r} score for sequence position {bad_seq_pos}.",
+                f"List of all active metrics & seqpos: {scores_dict.keys()}",
+                f"Choosing metric {first_metric!r}, seq pos {int(first_seq_pos)} instead."
+            ]))
 
         # Get tokenize function (we only need to define it once)
         assert self.model is not None
@@ -1186,14 +1196,6 @@ class SaeVisData:
             # Set the HTML data to be the one with the most columns (since different options might have fewer cols)
             if len(HTML_OBJ.html_data) < len(html_obj.html_data):
                 HTML_OBJ.html_data = deepcopy(html_obj.html_data)
-
-        # Check our first key is in the scores_dict (if not, we should pick a different key)
-        assert first_key in scores_dict, "\n".join(
-            [
-                f"Key {first_key} not found in {scores_dict.keys()=}.",
-                "This means that there are no features with a nontrivial score for this choice of key & metric.",
-            ]
-        )
 
         # Add the aggdata
         HTML_OBJ.js_data = {

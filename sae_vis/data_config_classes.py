@@ -436,6 +436,13 @@ class SaeVisConfig:
     seed: int | None = 0
     verbose: bool = False
 
+    # Depreciated
+    batch_size: None = None
+
+    def __post_init__(self):
+        assert self.batch_size is None,\
+            "The `batch_size` parameter has been depreciated. Please use `minibatch_size_tokens` instead."
+
     def to_dict(self) -> dict[str, Any]:
         """Used for type hinting (the actual method comes from the `dataclass_json` decorator)."""
         ...

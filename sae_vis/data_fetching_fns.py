@@ -116,7 +116,7 @@ def compute_feat_acts(
             encoder_B.W_enc,
             "batch seq d_in, d_in d_hidden -> batch seq d_hidden",
         )
-        feat_acts_B = F.relu(feat_acts_pre_B + encoder.b_enc)
+        feat_acts_B = F.relu(feat_acts_pre_B + encoder_B.b_enc)
 
         # Update the CorrCoef object between feature activation & encoder-B features
         corrcoef_encoder_B.update(
@@ -603,7 +603,7 @@ def get_feature_data(
     assert isinstance(
         model, HookedTransformer
     ), "Error: non-HookedTransformer models are not yet supported."
-    assert isinstance(cfg.hook_point, str), "Error: cfg.hook_point must be a string"
+    assert isinstance(cfg.hook_point, str), f"Error: cfg.hook_point must be a string, got {cfg.hook_point}"
     model_wrapper = TransformerLensWrapper(model, cfg.hook_point)
 
     # For each batch of features: get new data and update global data storage objects
