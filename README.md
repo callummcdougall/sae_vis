@@ -1,3 +1,7 @@
+Note - I'm still open to accepting PRs on this library, and am very happy for other people to build on it, but I won't be actively maintaining it going forwards since I'll be focusing on my job. The [SAELens](https://github.com/jbloomAus/SAELens) library will continue to have more development and iteration, and it uses a fork of this repo as well as containing a much larger suite of tools for working with SAEs, so depending on your use case you might find that library preferable!
+
+---
+
 This codebase was designed to replicate Anthropic's sparse autoencoder visualisations, which you can see [here](https://transformer-circuits.pub/2023/monosemantic-features/vis/a1.html). The codebase provides 2 different views: a **feature-centric view** (which is like the one in the link, i.e. we look at one particular feature and see things like which tokens fire strongest on that feature) and a **prompt-centric view** (where we look at once particular prompt and see which features fire strongest on that prompt according to a variety of different metrics).
 
 Install with `pip install sae-vis`. Link to PyPI page [here](https://pypi.org/project/sae-vis/).
