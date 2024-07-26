@@ -534,11 +534,14 @@ class SequenceData:
                         uColor=uColorMap(u_values[i]),
                     )
 
+            # pyright 1.1.373 freaks out if rounding is done in-line below for some reason
+            # this is likely a bug in 1.1.373, but rounding here is equivalent anyway
+            token_logit = round(self.token_logits[i], PRECISION)
             js_data_list.append(
                 dict(
                     tok=unprocess_str_tok(toks[i]),
                     tokID=self.token_ids[i],
-                    tokenLogit=round(self.token_logits[i], PRECISION),
+                    tokenLogit=token_logit,
                     **kwargs_bold,
                     **kwargs_this_token_active,
                     **kwargs_prev_token_active,
