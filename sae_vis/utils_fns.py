@@ -8,7 +8,6 @@ from typing import (
     Iterable,
     Literal,
     Sequence,
-    Type,
     TypeVar,
     overload,
 )
@@ -1030,12 +1029,12 @@ class HistogramData:
 
     @classmethod
     def from_data(
-        cls: Type[T],
+        cls,
         data: Tensor,
         n_bins: int,
         tickmode: Literal["ints", "5 ticks"],
         title: str | None,
-    ) -> T:
+    ):
         """
         Args:
             data: 1D tensor of data which will be turned into histogram
@@ -1084,7 +1083,7 @@ class HistogramData:
             )
             tick_vals = [round(t, 1) for t in tick_vals]
 
-        return cls(  # type: ignore
+        return cls(
             bar_heights=bar_heights,
             bar_values=bar_values,
             tick_vals=tick_vals,
