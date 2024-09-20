@@ -1,6 +1,6 @@
 Note - I'm planning for a major refactor of this library soon. The current way it works is an unholy patchwork of Python / HTML / JavaScript; the new version is much simpler: the vis is created with a minimal pre-existing HTML framework, instead it's populated using JavaScript, and the only way Python interfaces with JavaScript is to dump a single `DATA` dictionary into the JavaScript page. I've also created an Othello SAE vis, pictured below (also see it on my [personal website homepage](https://www.perfectlynormal.co.uk/)). I plan to get around to pushing updates to this library in late September / early October, so watch this space!
 
-<img src="https://github.com/callummcdougall/computational-thread-art/tree/master/example_images/misc/saevis-demos/othellogpt-demo.png" width="800">
+<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/saevis-demos/othellogpt-demo.png" width="800">
 
 ---
 
