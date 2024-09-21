@@ -171,3 +171,6 @@ callum_instructions.md
 april-fools
 *large.html
 requirements.txt
+othello_world*
+trained_saes*
+*_demo*.py

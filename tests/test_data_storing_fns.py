@@ -1,18 +1,16 @@
 import json
 from pathlib import Path
 
+from sae_lens import SAE
 from transformer_lens import HookedTransformer
 
 from sae_vis.data_config_classes import SaeVisConfig
 from sae_vis.data_storing_fns import SaeVisData
-from sae_vis.model_fns import AutoEncoder
 
 ROOT_DIR = Path(__file__).parent.parent
 
 
-def test_SaeVisData_create_results_look_reasonable(
-    model: HookedTransformer, autoencoder: AutoEncoder
-):
+def test_SaeVisData_create_results_look_reasonable(model: HookedTransformer, sae: SAE):
     cfg = SaeVisConfig(hook_point="blocks.2.hook_resid_pre", minibatch_size_tokens=2)
     tokens = model.to_tokens(
         [
@@ -20,9 +18,9 @@ def test_SaeVisData_create_results_look_reasonable(
             "Nothing is cheesier than cheese." * 3,
         ]
     )
-    data = SaeVisData.create(encoder=autoencoder, model=model, tokens=tokens, cfg=cfg)
+    data = SaeVisData.create(sae=sae, model=model, tokens=tokens, cfg=cfg)
 
-    assert data.encoder == autoencoder
+    assert data.sae == sae
     assert data.model == model
     assert data.cfg == cfg
     # kurtosis and skew are both empty, is this itentional?
@@ -48,7 +46,7 @@ def test_SaeVisData_create_results_look_reasonable(
 
 def test_SaeVisData_create_and_save_feature_centric_vis(
     model: HookedTransformer,
-    autoencoder: AutoEncoder,
+    sae: SAE,
     tmp_path: Path,
 ):
     cfg = SaeVisConfig(hook_point="blocks.2.hook_resid_pre", minibatch_size_tokens=2)
@@ -58,7 +56,7 @@ def test_SaeVisData_create_and_save_feature_centric_vis(
             "Nothing is cheesier than cheese." * 3,
         ]
     )
-    data = SaeVisData.create(encoder=autoencoder, model=model, tokens=tokens, cfg=cfg)
+    data = SaeVisData.create(sae=sae, model=model, tokens=tokens, cfg=cfg)
     save_path = tmp_path / "feature_centric_vis.html"
     data.save_feature_centric_vis(save_path)
     assert (save_path).exists()

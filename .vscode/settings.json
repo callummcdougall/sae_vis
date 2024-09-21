@@ -1,0 +1,6 @@
+{
+    "makefile.configureOnOpen": true,
+    "python.analysis.extraPaths": [
+        "C:/Users/calsm/Documents/AI Alignment/sae-vis/"
+    ]
+}
