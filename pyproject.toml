@@ -13,7 +13,7 @@ einops = "^0.7.0"
 datasets = "^2.0.0"
 dataclasses-json = "^0.6.4"
 jaxtyping = "^0.2.28"
-transformer-lens = "^1.0.0"
+transformer-lens = ">=1.0.0,<3.0.0"
 eindex-callum = "^0.1.0"
 rich = "^13.7.1"
 matplotlib = "^3.8.4"
@@ -29,6 +29,7 @@ profile = "black"
 src_paths = ["sae_vis", "tests"]
 
 [tool.ruff]
+line-length = 120
 exclude = ["sae_vis/css", "sae_vis/js", "sae_vis/html"]
 
 [tool.ruff.lint]

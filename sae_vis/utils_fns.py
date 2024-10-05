@@ -28,22 +28,14 @@ VocabType: TypeAlias = Literal["embed", "unembed", "probes"]
 Arr = np.ndarray
 T = TypeVar("T")
 
-BG_COLOR_MAP = colors.LinearSegmentedColormap.from_list(
-    "bg_color_map", ["white", "darkorange"]
-)
+BG_COLOR_MAP = colors.LinearSegmentedColormap.from_list("bg_color_map", ["white", "darkorange"])
 
 
 def get_device() -> torch.device:
     """
     Helper function to return the correct device (cuda, mps, or cpu).
     """
-    return torch.device(
-        "mps"
-        if torch.backends.mps.is_available()
-        else "cuda"
-        if torch.cuda.is_available()
-        else "cpu"
-    )
+    return torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
 
 
 MAIN = __name__ == "__main__"
@@ -55,9 +47,7 @@ METRIC_TITLES = {
 }
 
 
-def create_iterator(
-    iterator: Iterable[T], verbose: bool, desc: str | None = None
-) -> Iterable[T]:
+def create_iterator(iterator: Iterable[T], verbose: bool, desc: str | None = None) -> Iterable[T]:
     """
     Returns an iterator, useful for reducing code repetition.
     """
@@ -96,9 +86,7 @@ def k_largest_indices(
     return torch.stack((rows, cols), dim=1)
 
 
-def sample_unique_indices(
-    large_number: int, small_number: int
-) -> Int[Tensor, "small_number"]:
+def sample_unique_indices(large_number: int, small_number: int) -> Int[Tensor, "small_number"]:
     """
     Samples a small number of unique indices from a large number of indices.
 
@@ -377,15 +365,11 @@ class TopK:
             return utils.to_numpy(topk.values), utils.to_numpy(topk.indices)
 
         # Get the topk of the tensor, but only computed over the values of the tensor which are nontrivial
-        assert (
-            tensor_mask.shape == tensor.shape[:-1]
-        ), "Error: unexpected shape for tensor mask."
+        assert tensor_mask.shape == tensor.shape[:-1], "Error: unexpected shape for tensor mask."
         tensor_nontrivial_values = tensor[tensor_mask]  # shape [rows d]
         k = min(self.k, tensor_nontrivial_values.shape[-1])
         k = self.k
-        topk = tensor_nontrivial_values.topk(
-            k=k, largest=self.largest
-        )  # shape [rows k]
+        topk = tensor_nontrivial_values.topk(k=k, largest=self.largest)  # shape [rows k]
 
         # Get an array of indices and values (with unimportant elements) which we'll index into using the topk object
         topk_shape = (*tensor_mask.shape, k)
@@ -501,9 +485,7 @@ class FeatureStatistics:
     def create(
         cls,
         data: Float[Tensor, "batch data"] | None = None,
-        ranges_and_precisions: list[
-            tuple[list[float], int]
-        ] = ASYMMETRIC_RANGES_AND_PRECISIONS,
+        ranges_and_precisions: list[tuple[list[float], int]] = ASYMMETRIC_RANGES_AND_PRECISIONS,
     ) -> "FeatureStatistics":
         # Generate quantiles from the ranges_and_precisions list
         quantiles = []
@@ -532,9 +514,7 @@ class FeatureStatistics:
 
         # Now, strip out the quantile data prefixes which are all zeros
         for i, qd in enumerate(quantile_data):
-            first_nonzero = next(
-                (i for i, x in enumerate(qd) if abs(x) > 1e-6), len(qd)
-            )
+            first_nonzero = next((i for i, x in enumerate(qd) if abs(x) > 1e-6), len(qd))
             quantile_data[i] = qd[first_nonzero:]
 
         return cls(
@@ -589,17 +569,13 @@ class FeatureStatistics:
         """
         rp = self.ranges_and_precisions
         ranges = torch.tensor([r[0] for (r, _p) in rp] + [1.0]).to(values.device)
-        precisions = torch.tensor([rp[0][1]] + [p for (_r, p) in rp] + [rp[-1][1]]).to(
-            values.device
-        )
+        precisions = torch.tensor([rp[0][1]] + [p for (_r, p) in rp] + [rp[-1][1]]).to(values.device)
 
         # For efficient storage, we remove the zeros from quantile_data (it may start with zeros). So when converting it
         # back to a tensor, we need to pad it with zeros again.
         n_buckets = len(self.quantiles) - 1
         quantiles = torch.tensor(self.quantiles).to(values.device)
-        quantile_data = torch.tensor(
-            [pad_with_zeros(x, n_buckets) for x in self.quantile_data]
-        ).to(values.device)
+        quantile_data = torch.tensor([pad_with_zeros(x, n_buckets) for x in self.quantile_data]).to(values.device)
 
         values_is_1d = values.ndim == 1
         if values_is_1d:
@@ -609,15 +585,11 @@ class FeatureStatistics:
         my_slice = slice(None) if batch_indices is None else batch_indices
 
         # Find the quantiles of these values (i.e. the values between 0 and 1)
-        quantile_indices = torch.searchsorted(
-            quantile_data[my_slice], values
-        )  # shape [batch data_dim]
+        quantile_indices = torch.searchsorted(quantile_data[my_slice], values)  # shape [batch data_dim]
         quantiles = quantiles[quantile_indices]
 
         # Also get the precisions (which we do using a separate searchsorted, only over the range dividers)
-        precision_indices = torch.searchsorted(
-            ranges, quantiles
-        )  # shape [batch data_dim]
+        precision_indices = torch.searchsorted(ranges, quantiles)  # shape [batch data_dim]
         precisions = precisions[precision_indices]
 
         # If values was 1D, we want to return the result as 1D also (for convenience)
@@ -634,17 +606,13 @@ if MAIN:
     # test the "JSON doesn't store zeros" feature of the FeatureStatistics class.
     device = get_device()
     N = 100_000
-    data = torch.stack(
-        [torch.rand(N).masked_fill(torch.rand(N) < 0.5, 0.0), torch.rand(N)]
-    ).to(device)
+    data = torch.stack([torch.rand(N).masked_fill(torch.rand(N) < 0.5, 0.0), torch.rand(N)]).to(device)
     qc = FeatureStatistics.create(data)
     print(f"Total datapoints stored = {sum(len(x) for x in qc.quantile_data):_}")
     print(f"Total datapoints used to compute quantiles = {data.numel():_}\n")
 
     # 2D values tensor: each row applies to a different dataset
-    values = torch.tensor([[0.0, 0.005, 0.02, 0.25], [0.75, 0.98, 0.995, 1.0]]).to(
-        device
-    )
+    values = torch.tensor([[0.0, 0.005, 0.02, 0.25], [0.75, 0.98, 0.995, 1.0]]).to(device)
     quantiles, precisions = qc.get_quantile(values)
 
     print("When 50% of data is 0, and 50% is Unif[0, 1]")
@@ -663,9 +631,7 @@ def split_string(
     str1: str,
     str2: str,
 ) -> tuple[str, str]:
-    assert (
-        str1 in input_string and str2 in input_string
-    ), "Error: str1 and str2 must be in input_string"
+    assert str1 in input_string and str2 in input_string, "Error: str1 and str2 must be in input_string"
     pattern = f"({re.escape(str1)}.*?){re.escape(str2)}"
     match = re.search(pattern, input_string, flags=re.DOTALL)
     if match:
@@ -683,9 +649,7 @@ if MAIN:
     str2 = "jumps"
     print(split_string(input_string, str1, str2))
 
-    input_string = (
-        "Before table <!-- Logits table --> Table <!-- Logits histogram --> After table"
-    )
+    input_string = "Before table <!-- Logits table --> Table <!-- Logits histogram --> After table"
     str1 = r"<!-- Logits table -->"
     str2 = r"<!-- Logits histogram -->"
     print(split_string(input_string, str1, str2))
@@ -721,9 +685,7 @@ def apply_indent(
 # %%
 
 
-def deep_union(
-    dict1: dict[Any, Any], dict2: dict[Any, Any], path: str = ""
-) -> dict[Any, Any]:
+def deep_union(dict1: dict[Any, Any], dict2: dict[Any, Any], path: str = "") -> dict[Any, Any]:
     """
     Returns a deep union of dictionaries (recursive operation). In other words, if `dict1` and `dict2` have the same
     keys then the value of that key will be the deep union of the values.
@@ -884,17 +846,11 @@ class RollingCorrCoef:
         assert x.ndim == 2 and y.ndim == 2, "Both x and y should be 2D"
         X, Nx = x.shape
         Y, Ny = y.shape
-        assert (
-            Nx == Ny
-        ), "Error: x and y should have the same size in the last dimension"
+        assert Nx == Ny, "Error: x and y should have the same size in the last dimension"
         if self.X is not None:
-            assert (
-                X == self.X
-            ), "Error: updating a corrcoef object with different sized dataset."
+            assert X == self.X, "Error: updating a corrcoef object with different sized dataset."
         if self.Y is not None:
-            assert (
-                Y == self.Y
-            ), "Error: updating a corrcoef object with different sized dataset."
+            assert Y == self.Y, "Error: updating a corrcoef object with different sized dataset."
         self.X = X
         self.Y = Y
 
@@ -1182,10 +1138,7 @@ def compute_othello_board_state_and_valid_moves(
         return False
 
     def get_valid_moves(board: list[list[int]], player: int):
-        valid_moves = [
-            [int(is_valid_move(board, r, c, player)) for c in range(8)]
-            for r in range(8)
-        ]
+        valid_moves = [[int(is_valid_move(board, r, c, player)) for c in range(8)] for r in range(8)]
         any_valid = any(any(row) for row in valid_moves)
         return (valid_moves, any_valid)
 
@@ -1258,9 +1211,7 @@ def compute_othello_board_state_and_valid_moves(
 
 def othello_valid_legal_moves_as_target_distribution(
     tokens: Int[Tensor, "batch seq"],
-) -> tuple[
-    Int[Tensor, "batchFiltered seq"], Float[Tensor, "batchFiltered seq d_vocab"]
-]:
+) -> tuple[Int[Tensor, "batchFiltered seq"], Float[Tensor, "batchFiltered seq d_vocab"]]:
     """
     Idea: measuring cross entropy loss in Othello is misleading, since even though there is always
     one correct prediction, the correct target distribution is uniform over all correct moves. So we
@@ -1298,9 +1249,7 @@ def othello_valid_legal_moves_as_target_distribution(
         # We should have valid games past this point, i.e. there was always a legal move to play
         assert (target_distribution.sum(-1) > 0).all().item()
         valid_tokens.append(seq)
-        target_distribution = torch.concat(
-            [torch.zeros(seq_len, 1), target_distribution], -1
-        )  # (seq, 61)
+        target_distribution = torch.concat([torch.zeros(seq_len, 1), target_distribution], -1)  # (seq, 61)
         target_distributions.append((15 * target_distribution).log_softmax(-1))
         errors["valid"] += 1
 
@@ -1366,9 +1315,7 @@ def test_compute_othello_board_state():
 
 def visualize_compute_othello_board_state():
     game_prefix = [20, 21, 28, 23, 13, 5, 34, 19, 16, 43, 14, 30, 22, 40, 47, 48]
-    results = compute_othello_board_state_and_valid_moves(
-        game_prefix, move_indices="all"
-    )
+    results = compute_othello_board_state_and_valid_moves(game_prefix, move_indices="all")
     assert not isinstance(results, str)
     for i, result in enumerate(results):
         print(f"Move {i}:")
@@ -1376,15 +1323,11 @@ def visualize_compute_othello_board_state():
             print("  " + "".join(str(sq) if sq != 0 else "." for sq in row))
 
 
-def cross_entropy_loss(
-    logits: Float[Tensor, "... d"], target_logits: Float[Tensor, "... d"]
-) -> Float[Tensor, "..."]:
+def cross_entropy_loss(logits: Float[Tensor, "... d"], target_logits: Float[Tensor, "... d"]) -> Float[Tensor, "..."]:
     """
     Version of CE loss that works with a target logits tensor, rather than class indices.
     """
-    assert (
-        logits.shape == target_logits.shape
-    ), f"Error: {logits.shape=}, {target_logits.shape=}"
+    assert logits.shape == target_logits.shape, f"Error: {logits.shape=}, {target_logits.shape=}"
     target_probs = target_logits.softmax(-1)
     logprobs = logits.log_softmax(-1)
 

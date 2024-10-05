@@ -89,34 +89,24 @@ class SeqMultiGroupConfig(BaseComponentConfig):
         return all(
             [
                 self.buffer is None
-                or (
-                    other.buffer is not None and self.buffer[0] <= other.buffer[0]
-                ),  # the buffer needs to be <=
-                self.buffer is None
-                or (other.buffer is not None and self.buffer[1] <= other.buffer[1]),
+                or (other.buffer is not None and self.buffer[0] <= other.buffer[0]),  # the buffer needs to be <=
+                self.buffer is None or (other.buffer is not None and self.buffer[1] <= other.buffer[1]),
                 int(self.compute_buffer)
-                <= int(
-                    other.compute_buffer
-                ),  # we can't compute the buffer if we didn't in `other`
+                <= int(other.compute_buffer),  # we can't compute the buffer if we didn't in `other`
                 self.n_quantiles
                 in {
                     0,
                     other.n_quantiles,
                 },  # we actually need the quantiles identical (or one to be zero)
-                self.top_acts_group_size
-                <= other.top_acts_group_size,  # group size needs to be <=
-                self.quantile_group_size
-                <= other.quantile_group_size,  # each quantile group needs to be <=
-                self.top_logits_hoverdata
-                <= other.top_logits_hoverdata,  # hoverdata rows need to be <=
+                self.top_acts_group_size <= other.top_acts_group_size,  # group size needs to be <=
+                self.quantile_group_size <= other.quantile_group_size,  # each quantile group needs to be <=
+                self.top_logits_hoverdata <= other.top_logits_hoverdata,  # hoverdata rows need to be <=
             ]
         )
 
     def __post_init__(self):
         # Get list of group lengths, based on the config params
-        self.group_sizes = [self.top_acts_group_size] + [
-            self.quantile_group_size
-        ] * self.n_quantiles
+        self.group_sizes = [self.top_acts_group_size] + [self.quantile_group_size] * self.n_quantiles
 
     @property
     def help_dict(self) -> dict[str, str]:
@@ -291,9 +281,7 @@ class SaeVisLayoutConfig:
     @property
     def components(self):
         """Returns a dictionary mapping component names (lowercase) to their configs, filtering out Nones."""
-        all_components = {
-            k[0].lower() + k[1:]: self.get_cfg_from_name(k) for k in self.COMPONENT_MAP
-        }
+        all_components = {k[0].lower() + k[1:]: self.get_cfg_from_name(k) for k in self.COMPONENT_MAP}
         return {k: v for k, v in all_components.items() if v is not None}
 
     def __init__(self, columns: list[Column], height: int = 750):
@@ -307,15 +295,9 @@ class SaeVisLayoutConfig:
         self.height = height
 
         # Get a list of all our components, and verify there's no duplicates
-        all_components = [
-            component for column in self.columns.values() for component in column
-        ]
-        all_component_names = [
-            comp.__class__.__name__.rstrip("Config") for comp in all_components
-        ]
-        assert len(all_component_names) == len(
-            set(all_component_names)
-        ), "Duplicate components in layout config"
+        all_components = [component for column in self.columns.values() for component in column]
+        all_component_names = [comp.__class__.__name__.rstrip("Config") for comp in all_components]
+        assert len(all_component_names) == len(set(all_component_names)), "Duplicate components in layout config"
 
         # Once we've verified this, store each config component as an attribute
         for comp, comp_name in zip(all_components, all_component_names):
@@ -401,27 +383,19 @@ class SaeVisLayoutConfig:
             # For each component in that column, add a tree node
             for component_idx, vis_component in enumerate(vis_components):
                 n_params = len(asdict(vis_component))
-                tree_component = tree_column.add(
-                    f"{vis_component.__class__.__name__}".rstrip("Config")
-                )
+                tree_component = tree_column.add(f"{vis_component.__class__.__name__}".rstrip("Config"))
 
                 # For each config parameter of that component
-                for param_idx, (param, value) in enumerate(
-                    asdict(vis_component).items()
-                ):
+                for param_idx, (param, value) in enumerate(asdict(vis_component).items()):
                     # Get line break if we're at the final parameter of this component (unless it's the final component
                     # in the final column)
                     suffix = "\n" if (param_idx == n_params - 1) else ""
-                    if (component_idx == n_components - 1) and (
-                        column_idx == n_columns - 1
-                    ):
+                    if (component_idx == n_components - 1) and (column_idx == n_columns - 1):
                         suffix = ""
 
                     # Get argument description, and its default value
                     desc = vis_component.help_dict.get(param, "")
-                    value_default = getattr(
-                        vis_component.__class__, param, "no default"
-                    )
+                    value_default = getattr(vis_component.__class__, param, "no default")
 
                     # Add tree node (appearance is different if value is changed from default)
                     if value != value_default:
@@ -437,9 +411,7 @@ class SaeVisLayoutConfig:
         return cls(
             columns=[
                 Column(FeatureTablesConfig()),
-                Column(
-                    ActsHistogramConfig(), LogitsTableConfig(), LogitsHistogramConfig()
-                ),
+                Column(ActsHistogramConfig(), LogitsTableConfig(), LogitsHistogramConfig()),
                 Column(SeqMultiGroupConfig()),
             ],
             height=750,
@@ -518,9 +490,7 @@ class SaeVisConfig:
     feature_centric_layout: SaeVisLayoutConfig = field(
         default_factory=SaeVisLayoutConfig.default_feature_centric_layout
     )
-    prompt_centric_layout: SaeVisLayoutConfig = field(
-        default_factory=SaeVisLayoutConfig.default_prompt_centric_layout
-    )
+    prompt_centric_layout: SaeVisLayoutConfig = field(default_factory=SaeVisLayoutConfig.default_prompt_centric_layout)
 
     # Misc
     seed: int | None = 0
@@ -532,29 +502,21 @@ class SaeVisConfig:
         assert (
             self.batch_size is None
         ), "The `batch_size` parameter has been depreciated. Please use `minibatch_size_tokens` instead."
-        assert (
-            len(self.prompt_centric_layout.columns) == 1
-        ), "Only allowed a single column for prompt-centric layout."
+        assert len(self.prompt_centric_layout.columns) == 1, "Only allowed a single column for prompt-centric layout."
 
     def help(self, title: str = "SaeVisConfig"):
         """
         Performs the `help` method for both of the layout objects, as well as for the non-layout-based configs.
         """
         # Create table for all the non-layout-based params
-        table = Table(
-            "Param", "Value (default)", "Description", title=title, show_lines=True
-        )
+        table = Table("Param", "Value (default)", "Description", title=title, show_lines=True)
 
         # Populate table (middle row is formatted based on whether value has changed from default)
         for param, desc in SAE_CONFIG_DICT.items():
             value = getattr(self, param)
             value_default = getattr(self.__class__, param, "no default")
             if value != value_default:
-                value_default_repr = (
-                    "no default"
-                    if value_default == "no default"
-                    else repr(value_default)
-                )
+                value_default_repr = "no default" if value_default == "no default" else repr(value_default)
                 value_str = f"[b dark_orange]{value!r}[/]\n({value_default_repr})"
             else:
                 value_str = f"[b #00aa00]{value!r}[/]"
@@ -562,9 +524,5 @@ class SaeVisConfig:
 
         # Print table, and print the help trees for the layout objects
         rprint(table)
-        self.feature_centric_layout.help(
-            title="SaeVisLayoutConfig: feature-centric vis", key=False
-        )
-        self.prompt_centric_layout.help(
-            title="SaeVisLayoutConfig: prompt-centric vis", key=False
-        )
+        self.feature_centric_layout.help(title="SaeVisLayoutConfig: feature-centric vis", key=False)
+        self.prompt_centric_layout.help(title="SaeVisLayoutConfig: prompt-centric vis", key=False)

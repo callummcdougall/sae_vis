@@ -38,9 +38,7 @@ def round_1d_list(lst: list[float], precision: int = PRECISION) -> list[float]:
     return [round(f, precision) for f in lst]
 
 
-def round_2d_list(
-    lst: list[list[float]], precision: int = PRECISION
-) -> list[list[float]]:
+def round_2d_list(lst: list[list[float]], precision: int = PRECISION) -> list[list[float]]:
     return [[round(f, precision) for f in floats] for floats in lst]
 
 
@@ -97,9 +95,7 @@ class FeatureTablesData:
         always the same width & height, which is why there's no customization available for this function.
         """
         cfg = layout.feature_tables_cfg
-        assert (
-            cfg is not None
-        ), "Calling `FeatureTablesData.data`, but with no vis config for that component."
+        assert cfg is not None, "Calling `FeatureTablesData.data`, but with no vis config for that component."
         data = {}
 
         # Store the neuron alignment data, if it exists
@@ -146,9 +142,7 @@ class ActsHistogramData(HistogramData):
         showing the distribution of activations for this feature).
         """
         cfg = layout.act_hist_cfg
-        assert (
-            cfg is not None
-        ), "Calling `ActsHistogramData.data`, but with no vis config for that component."
+        assert cfg is not None, "Calling `ActsHistogramData.data`, but with no vis config for that component."
 
         # We can't post-hoc change the number of bins, so check this wasn't changed in the config
         # assert cfg.n_bins == len(self.bar_heights),\
@@ -175,9 +169,7 @@ class LogitsHistogramData(HistogramData):
         the distribution of direct logit effect on that token).
         """
         cfg = layout.logits_hist_cfg
-        assert (
-            cfg is not None
-        ), "Calling `LogitsHistogramData.data`, but with no vis config for that component."
+        assert cfg is not None, "Calling `LogitsHistogramData.data`, but with no vis config for that component."
 
         # We can't post-hoc change the number of bins, so check this wasn't changed in the config
         # assert cfg.n_bins == len(self.bar_heights),\
@@ -201,9 +193,7 @@ class LogitsTableData:
     max_logits: float | None = None
 
     @classmethod
-    def from_data(
-        cls, logits: Float[Tensor, "d_vocab"], k: int, max_logits: float | None = None
-    ) -> "LogitsTableData":
+    def from_data(cls, logits: Float[Tensor, "d_vocab"], k: int, max_logits: float | None = None) -> "LogitsTableData":
         # Get logits table data
         top_logits = TopK(logits, k)
         bottom_logits = TopK(logits, k, largest=False)
@@ -226,25 +216,17 @@ class LogitsTableData:
         Converts data -> HTML object, for the logits table (i.e. the top and bottom affected tokens by this feature).
         """
         cfg = layout.logits_table_cfg
-        assert (
-            cfg is not None
-        ), "Calling `LogitsTableData.data`, but with no vis config for that component."
+        assert cfg is not None, "Calling `LogitsTableData.data`, but with no vis config for that component."
 
         # Crop the lists to `cfg.n_rows` (first checking the config doesn't ask for more rows than we have)
         assert cfg.n_rows <= len(self.bottom_logits)
 
         # Get the string tokens, using the decode function (unembed mode or probes mode!)
-        neg_str = to_str_tokens(
-            self.bottom_token_ids[: cfg.n_rows], decode_fn, self.vocab_type
-        )
-        pos_str = to_str_tokens(
-            self.top_token_ids[: cfg.n_rows], decode_fn, self.vocab_type
-        )
+        neg_str = to_str_tokens(self.bottom_token_ids[: cfg.n_rows], decode_fn, self.vocab_type)
+        pos_str = to_str_tokens(self.top_token_ids[: cfg.n_rows], decode_fn, self.vocab_type)
 
         # Get max loss (might be part of table data)
-        max_logits = self.max_logits or max(
-            0.0, self.top_logits[0], -self.bottom_logits[0]
-        )
+        max_logits = self.max_logits or max(0.0, self.top_logits[0], -self.bottom_logits[0])
 
         # Get data for the tables of pos/neg logits
         return {
@@ -295,16 +277,14 @@ class ProbeLogitsTableData:
             for name, logits in probes.items():
                 top_logits = TopK(logits, k)
                 bottom_logits = TopK(logits, k, largest=False)
-                probe_logits_data[f"PROBE {name!r}, {probe_type.upper()} SPACE"] = (
-                    LogitsTableData(
-                        bottom_logits=bottom_logits.values.tolist(),
-                        bottom_token_ids=bottom_logits.indices.tolist(),
-                        top_logits=top_logits.values.tolist(),
-                        top_token_ids=top_logits.indices.tolist(),
-                        vocab_type="probes",
-                        max_logits=max_logits or logits.abs().max().item(),
-                        # max_logits=max_logits or max_or_1([L.abs().max().item() for L in probes.values()]),
-                    )
+                probe_logits_data[f"PROBE {name!r}, {probe_type.upper()} SPACE"] = LogitsTableData(
+                    bottom_logits=bottom_logits.values.tolist(),
+                    bottom_token_ids=bottom_logits.indices.tolist(),
+                    top_logits=top_logits.values.tolist(),
+                    top_token_ids=top_logits.indices.tolist(),
+                    vocab_type="probes",
+                    max_logits=max_logits or logits.abs().max().item(),
+                    # max_logits=max_logits or max_or_1([L.abs().max().item() for L in probes.values()]),
                 )
         return cls(probe_logits_data=probe_logits_data)
 
@@ -361,12 +341,8 @@ class SequenceData:
         JavaScript).
         """
         self.seq_len = len(self.token_ids)
-        self.top_logits, self.top_token_ids = self._filter(
-            self.top_logits, self.top_token_ids
-        )
-        self.bottom_logits, self.bottom_token_ids = self._filter(
-            self.bottom_logits, self.bottom_token_ids
-        )
+        self.top_logits, self.top_token_ids = self._filter(self.top_logits, self.top_token_ids)
+        self.bottom_logits, self.bottom_token_ids = self._filter(self.bottom_logits, self.bottom_token_ids)
 
     def _filter(
         self, float_list: list[list[float]], int_list: list[list[int]]
@@ -377,10 +353,7 @@ class SequenceData:
         of their respective lists. Also reduces precisions of feature activations & logits.
         """
         # Next, filter out zero-elements and reduce precision
-        float_list = [
-            [round(f, PRECISION) for f in floats if abs(f) > 1e-6]
-            for floats in float_list
-        ]
+        float_list = [[round(f, PRECISION) for f in floats if abs(f) > 1e-6] for floats in float_list]
         int_list = [ints[: len(floats)] for ints, floats in zip(int_list, float_list)]
         return float_list, int_list
 
@@ -398,9 +371,7 @@ class SequenceData:
                 The data for this sequence, in the form of a list of dicts for each token (where the dict stores things
                 like token, feature activations, etc).
         """
-        assert isinstance(
-            cfg, (PromptConfig, SeqMultiGroupConfig)
-        ), f"Invalid config type: {type(cfg)}"
+        assert isinstance(cfg, (PromptConfig, SeqMultiGroupConfig)), f"Invalid config type: {type(cfg)}"
 
         seq_group_id = component_specific_kwargs.get("seq_group_id", None)
         bold_idx = component_specific_kwargs.get("bold_idx", None)
@@ -414,13 +385,10 @@ class SequenceData:
         if isinstance(cfg, SeqMultiGroupConfig) and cfg.othello:
             # In this case, return a dict containing {board, valid, lastMove, etc}
             assert (
-                bold_idx == "max"
-                and len(self.feat_acts) == len(self.loss_contribution) == 1
+                bold_idx == "max" and len(self.feat_acts) == len(self.loss_contribution) == 1
             ), "Othello expects bold_idx='max' and only 1 feature act, because we see all 59 game states and only highlight one."
             assert self.feat_acts_idx is not None
-            results = compute_othello_board_state_and_valid_moves(
-                moves := self.token_ids[: self.feat_acts_idx + 1]
-            )
+            results = compute_othello_board_state_and_valid_moves(moves := self.token_ids[: self.feat_acts_idx + 1])
             assert not isinstance(results, str), f"Error: {results!r} in {moves}"
             act = self.feat_acts[0]
             loss = self.loss_contribution[0]
@@ -439,19 +407,14 @@ class SequenceData:
                 bold_idx = self.seq_len // 2
 
             # If we only have data for the bold token, we pad out everything with zeros or empty lists
-            only_bold = isinstance(cfg, SeqMultiGroupConfig) and not (
-                cfg.compute_buffer
-            )
+            only_bold = isinstance(cfg, SeqMultiGroupConfig) and not (cfg.compute_buffer)
             if only_bold:
                 assert bold_idx != "max", "Don't know how to deal with this case yet."
 
                 def pad_data_list(x: Any) -> Any:
                     if isinstance(x, list):
                         default = [] if isinstance(x[0], list) else 0.0
-                        return [
-                            x[0] if (i == bold_idx) + 1 else default
-                            for i in range(self.seq_len)
-                        ]
+                        return [x[0] if (i == bold_idx) + 1 else default for i in range(self.seq_len)]
 
                 feat_acts = pad_data_list(self.feat_acts)
                 loss_contribution = pad_data_list(self.loss_contribution)
@@ -480,11 +443,7 @@ class SequenceData:
                 neg_val = [[]] + neg_val
             # If we're getting the full seq (not a buffer), then self.token_ids will be all tokens, so we need to add one to each of pos_ids, ...
             assert (
-                len(pos_ids)
-                == len(neg_ids)
-                == len(pos_val)
-                == len(neg_val)
-                == len(self.token_ids)
+                len(pos_ids) == len(neg_ids) == len(pos_val) == len(neg_val) == len(self.token_ids)
             ), f"Unexpected lengths: {len(pos_ids)}, {len(neg_ids)}, {len(pos_val)}, {len(neg_val)}, {len(self.token_ids)}"
 
             # Process the tokens to get str toks
@@ -507,18 +466,12 @@ class SequenceData:
 
                 # Get args if this is the bolded token (we make it bold, and maybe add permanent line to histograms)
                 if bold_idx is not None:
-                    kwargs_bold["isBold"] = (bold_idx == i) or (
-                        bold_idx == "max" and i == np.argmax(feat_acts).item()
-                    )
+                    kwargs_bold["isBold"] = (bold_idx == i) or (bold_idx == "max" and i == np.argmax(feat_acts).item())
                     if kwargs_bold["isBold"] and permanent_line:
                         kwargs_bold["permanentLine"] = True
 
                 # If we only have data for the bold token, we hide all other tokens' hoverdata (and skip other kwargs)
-                if (
-                    only_bold
-                    and isinstance(bold_idx, int)
-                    and (i not in {bold_idx, bold_idx + 1})
-                ):
+                if only_bold and isinstance(bold_idx, int) and (i not in {bold_idx, bold_idx + 1}):
                     kwargs_hide["hide"] = True
 
                 else:
@@ -595,9 +548,7 @@ class SeqGroupData:
     @property
     def max_loss_contribution(self) -> float:
         """Returns maximum value of loss contribution over all sequences in this group."""
-        return max_or_1(
-            [loss for seq in self.seq_data for loss in seq.loss_contribution], abs=True
-        )
+        return max_or_1([loss for seq in self.seq_data for loss in seq.loss_contribution], abs=True)
 
     def _get_seq_group_data(
         self,
@@ -621,16 +572,13 @@ class SeqGroupData:
 
         # Get metadata for this sequence group
         seq_group_id = (
-            component_specific_kwargs.get("seq_group_id", None)
-            or f"seq-group-{random.randint(0, 999999):06d}"
+            component_specific_kwargs.get("seq_group_id", None) or f"seq-group-{random.randint(0, 999999):06d}"
         )
         group_size = component_specific_kwargs.get("group_size", None)
         max_feat_act = component_specific_kwargs.get("max_feat_act", None) or round(
             max_or_1([act for seq in self.seq_data for act in seq.feat_acts]), PRECISION
         )
-        max_loss_contribution = component_specific_kwargs.get(
-            "max_loss_contribution", None
-        ) or round(
+        max_loss_contribution = component_specific_kwargs.get("max_loss_contribution", None) or round(
             max_or_1([loss for seq in self.seq_data for loss in seq.loss_contribution]),
             PRECISION,  # abs=True?
         )
@@ -650,9 +598,7 @@ class SeqGroupData:
                 cfg,
                 decode_fn,
                 component_specific_kwargs=dict(
-                    bold_idx="max"
-                    if isinstance(cfg, PromptConfig) or cfg.buffer is None
-                    else cfg.buffer[0],
+                    bold_idx="max" if isinstance(cfg, PromptConfig) or cfg.buffer is None else cfg.buffer[0],
                     permanent_line=False,  # in a group, we're never showing a permanent line (only for single seqs)
                     seq_group_id=seq_group_id,
                 ),
@@ -692,9 +638,7 @@ class SeqMultiGroupData:
             html_obj:  Object containing the HTML and JavaScript data for these multiple seq groups.
         """
         cfg = layout.prompt_cfg if self.is_prompt else layout.seq_cfg
-        assert (
-            cfg is not None
-        ), "Calling `SeqMultiGroupData.data`, but with no vis config for that component."
+        assert cfg is not None, "Calling `SeqMultiGroupData.data`, but with no vis config for that component."
 
         # Get max activation value & max loss contributions, over all sequences in all groups
         max_feat_act = component_specific_kwargs.get(
@@ -717,19 +661,11 @@ class SeqMultiGroupData:
                     seq_group_id=f"seq-group-{i}",
                 ),
             )
-            for i, (group_size, sequences_group) in enumerate(
-                zip(group_sizes, self.seq_group_data)
-            )
+            for i, (group_size, sequences_group) in enumerate(zip(group_sizes, self.seq_group_data))
         ]
 
 
-GenericData = (
-    FeatureTablesData
-    | ActsHistogramData
-    | LogitsTableData
-    | LogitsHistogramData
-    | SeqMultiGroupData
-)
+GenericData = FeatureTablesData | ActsHistogramData | LogitsTableData | LogitsHistogramData | SeqMultiGroupData
 
 
 @dataclass
@@ -757,9 +693,7 @@ class SaeVisData:
     """
 
     feature_data_dict: dict[int, dict[str, GenericData]] = field(default_factory=dict)
-    prompt_data_dict: dict[int, dict[tuple[str | int, ...], SeqMultiGroupData]] = field(
-        default_factory=dict
-    )
+    prompt_data_dict: dict[int, dict[tuple[str | int, ...], SeqMultiGroupData]] = field(default_factory=dict)
 
     feature_stats: FeatureStatistics = field(default_factory=FeatureStatistics)
     cfg: SaeVisConfig = field(default_factory=SaeVisConfig)
@@ -767,12 +701,8 @@ class SaeVisData:
     model: HookedTransformer | None = None
     sae: SAE | None = None
     sae_B: SAE | None = None
-    linear_probes_input: dict[str, Float[Tensor, "d_model d_vocab_out"]] = field(
-        default_factory=dict
-    )
-    linear_probes_output: dict[str, Float[Tensor, "d_model d_vocab_out"]] = field(
-        default_factory=dict
-    )
+    linear_probes_input: dict[str, Float[Tensor, "d_model d_vocab_out"]] = field(default_factory=dict)
+    linear_probes_output: dict[str, Float[Tensor, "d_model d_vocab_out"]] = field(default_factory=dict)
 
     vocab_dict: dict[VocabType, dict[int, str]] | None = None
 
@@ -781,9 +711,7 @@ class SaeVisData:
         if self.vocab_dict is None:
             assert self.model is not None
             self.vocab_dict = {v: k for k, v in self.model.tokenizer.vocab.items()}  # type: ignore
-            self.vocab_dict = {
-                k: self.vocab_dict for k in ["embed", "unembed", "probes"]
-            }  # type: ignore
+            self.vocab_dict = {k: self.vocab_dict for k in ["embed", "unembed", "probes"]}  # type: ignore
         self.decode_fn = get_decode_html_safe_fn(self.vocab_dict)  # type: ignore
 
     def update(self, other: "SaeVisData") -> None:
@@ -877,9 +805,7 @@ class SaeVisData:
 
         DATA = {
             str(feat): {
-                comp_name: components_dict[comp_name].data(
-                    layout=layout, decode_fn=self.decode_fn
-                )
+                comp_name: components_dict[comp_name].data(layout=layout, decode_fn=self.decode_fn)
                 for comp_name in layout.components
             }
             for feat, components_dict in all_feature_data
@@ -912,16 +838,12 @@ class SaeVisData:
 
         # This function populates "self.feature_data" by adding the prompt data component, and also
         # returns dict mapping stringified metric keys to the top features for that metric
-        PROMPT_DATA = get_prompt_data(
-            sae_vis_data=self, prompt=prompt, num_top_features=num_top_features
-        )
+        PROMPT_DATA = get_prompt_data(sae_vis_data=self, prompt=prompt, num_top_features=num_top_features)
         assert len(PROMPT_DATA) > 0, "No active feats found for any prompt tokens"
 
         # Get all possible values for dropdowns
         str_toks = self.model.tokenizer.tokenize(prompt)  # type: ignore
-        str_toks = [
-            t.replace("|", "│") for t in str_toks
-        ]  # vertical line -> pipe (hacky, so key splitting on | works)
+        str_toks = [t.replace("|", "│") for t in str_toks]  # vertical line -> pipe (hacky, so key splitting on | works)
         seq_keys = [f"{t!r} ({i})" for i, t in enumerate(str_toks)]
 
         # Get default values for dropdowns
@@ -944,9 +866,7 @@ class SaeVisData:
 
         DATA = {
             str(feat): {
-                comp_name: components_dict[comp_name].data(
-                    layout=layout, decode_fn=self.decode_fn
-                )
+                comp_name: components_dict[comp_name].data(layout=layout, decode_fn=self.decode_fn)
                 for comp_name in layout.components
             }
             for feat, components_dict in all_feature_data
