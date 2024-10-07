@@ -190,11 +190,11 @@ sae_vis_data.save_feature_centric_vis(
 attn_model: HookedSAETransformer = HookedSAETransformer.from_pretrained("attn-only-2l-demo")
 hf_repo_id = "callummcdougall/arena-demos-attn2l"
 # sae_id = "blocks.1.attn.hook_z"
-sae_id = "blocks.0.attn.hook_z-v3"
+sae_id = "blocks.0.attn.hook_z-v2"
 attn_sae = SAE.from_pretrained(release=hf_repo_id, sae_id=sae_id, device=str(device))[0]
 
 original_dataset = load_dataset(attn_sae.cfg.dataset_path, split="train", streaming=True, trust_remote_code=True)
-batch_size = 1024
+batch_size = 4096
 seq_len = 256
 seq_list = [x["input_ids"][: seq_len - 1] for (_, x) in zip(range(batch_size), original_dataset)]
 tokens = torch.tensor(seq_list, device=device)
@@ -222,7 +222,7 @@ gc.collect()
 sae_vis_data = SaeVisData.create(
     sae=attn_sae,
     model=attn_model,
-    tokens=tokens[:128],
+    tokens=tokens,
     cfg=SaeVisConfig(
         hook_point=sae_id,
         features=alive_feats[:32],
