@@ -237,68 +237,99 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
     
     componentData.forEach(seqGroup => {
         const {seqGroupData, seqGroupMetadata} = seqGroup;
-        const {seqGroupID, title, maxAct, maxLoss} = seqGroupMetadata;
-    
-        const seqGroupContainer = seqGroupsContainer.append('div')
+        const {seqGroupID, title, maxAct, maxLoss, maxDFA} = seqGroupMetadata;
+
+        if (title) {
+            seqGroupsContainer.append('div').html(`<h4>${title}</h4>`);
+        }
+
+        var seqGroupContainerInner;
+        const seqGroupContainerOuter = seqGroupsContainer.append('div')
             .attr('id', seqGroupID)
-            .attr('class', 'seq-group')
-            .html(title ? `<h4>${title}</h4>` : '');
+            .attr('class', 'seq-group');
+        
+        if (maxDFA) {
+            // If we're using DFA, then insert the DFA column on the left half, and define a thing on the right half to
+            // insert the normal sequences in
+            seqGroupContainerOuter.style('display', 'flex');
 
-        // Select all sequences (initially empty), and then add our sequences & bind them to the elems in seqGroup.seqGroupData
-        const seqGroupElem = seqGroupContainer.selectAll('.seq')
-            .data(seqGroupData)
-            .enter()
-            .append('div')
-            .attr('class', 'seq');
-    
-        // For each sequence, we iterate over & add all its tokens
-        // (if DFA tokens exist, we add them first, then add the separator tokens)
-        seqGroupElem.each(function({seqData, dfaSeqData, seqMetadata}) {
+            const dfaSeqGroupContainer = seqGroupContainerOuter.append('div')
+                .attr('class', 'dfa-seq-group')
+                .style('flex', '1 1 50%');
 
-            dfaSeqData.forEach(tokData =>
-                generateTokHtmlElement({
-                    parent: d3.select(this), 
-                    tok: tokData.tok,
-                    tokID: tokData.tokID,
-                    tokValue: tokData["dfaValue"],
-                    isDfa: true,
-                })
-            )
+            var seqGroupContainerInner = seqGroupContainerOuter.append('div')
+                .attr('class', 'seq-group')
+                .style('flex', '1 1 50%');
 
-            seqData.forEach(tokData => {
-
-                generateTokHtmlElement({
-                    parent: d3.select(this), 
-                    tok: tokData.tok,
-                    tokID: tokData.tokID,
-                    isBold: tokData["isBold"],
-                    tokValue: tokData["featAct"],
-                    tokenLogit: tokData["tokenLogit"],
-                    lossEffect: tokData["lossEffect"],
-                    origProb: tokData["origProb"],
-                    newProb: tokData["newProb"],
-                    posToks: tokData["posToks"],
-                    posVal: tokData["posVal"],
-                    negToks: tokData["negToks"],
-                    negVal: tokData["negVal"],
-                    permanentLine: tokData["permanentLine"],
-                    hide: tokData["hide"]
+            dfaSeqGroupContainer.selectAll('.seq')
+                .data(seqGroupData)
+                .enter()
+                .append('div')
+                .attr('class', 'seq')
+                .each(function({seqData, dfaSeqData}) {
+                    dfaSeqData.forEach(tokData => {
+                        generateTokHtmlElement({
+                            parent: d3.select(this), 
+                            tok: tokData.tok,
+                            tokID: tokData.tokID,
+                            tokPosn: tokData.tokPosn,
+                            tokValue: tokData["dfaValue"],
+                            isDfa: true,
+                            isBold: tokData["isBold"],
+                            maxValue: maxDFA,
+                        });
+                    });
                 });
-            });
-        });
+        } else {
+            // If not using DFA, then we just insert the normal sequences into the container as given
+            seqGroupContainerInner = seqGroupContainerOuter;
+        }
+
+        seqGroupContainerInner.selectAll('.seq')
+                .data(seqGroupData)
+                .enter()
+                .append('div')
+                .attr('class', 'seq')
+                .each(function({seqData}) {
+                    seqData.forEach(tokData => {
+                        generateTokHtmlElement({
+                            parent: d3.select(this),
+                            maxLoss: maxLoss,
+                            maxValue: maxAct,
+                            tok: tokData.tok,
+                            tokID: tokData.tokID,
+                            tokPosn: tokData.tokPosn,
+                            isBold: tokData["isBold"],
+                            tokValue: tokData["featAct"],
+                            tokenLogit: tokData["tokenLogit"],
+                            lossEffect: tokData["lossEffect"],
+                            logitEffect: tokData["logitEffect"],
+                            origProb: tokData["origProb"],
+                            newProb: tokData["newProb"],
+                            posToks: tokData["posToks"],
+                            posVal: tokData["posVal"],
+                            negToks: tokData["negToks"],
+                            negVal: tokData["negVal"],
+                            permanentLine: tokData["permanentLine"],
+                            hide: tokData["hide"]
+                        });
+                    });
+                });
     });
 
-    function generateTokHtmlElement(
+    function generateTokHtmlElement({
         parent,
         maxLoss = 1.0,                     // for setting underline color
-        maxAct = 1.0,                      // for setting background color
+        maxValue = 1.0,                    // for setting background color
         tok,
         tokID,
+        tokPosn,                           // position in dataset, as a string of ("{batch_idx}, {seq_idx}")
         tokValue = 0.0,                    // either feature activation or attribution value
         isDfa = false,                     // controls highlight color (dfa src is orange, normal is green)
         isBold = false,                    // is this token bolded?
         tokenLogit = 0.0,                  // raw logit effect on this token
         lossEffect = 0.0,                  // effect on loss
+        logitEffect = 0.0,                 // effect on logits
         origProb = null,                   // orig probability (for hoverinfo)
         newProb = null,                    // new probability (for hoverinfo)
         posToks = [],                      // most-positive tokens (as strings)
@@ -307,7 +338,7 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
         negVal = [],                       // most-negative token values
         permanentLine = false,             // do we show a permanent line on histogram?
         hide = false                       // do we suppress hoverdata for this token?
-    ) {
+    }) {
         // Figure out if previous token was active (this affects the construction of the tooltip)
         let prevTokenActive = posToks.length + negToks.length > 0;
     
@@ -318,7 +349,7 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
         // Put actual token in the tokenSpan object (i.e. the thing we see without hovering)    
         tokenSpan.append("span")
             .attr("class", "token")
-            .style("background-color", actColor(tokValue, maxAct, isDfa))
+            .style("background-color", actColor(tokValue, maxValue, isDfa))
             .style("border-bottom", `4px solid ${lossColor(lossEffect, maxLoss, opacity=1)}`)
             .style("font-weight", isBold ? "bold" : "normal")
             .text(tok);
@@ -356,8 +387,9 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
         } else { 
     
             // First define the tooltip div (added to the parent element, i.e. it's a sibling of the token span)
-            let tooltipHeight = prevTokenActive ? 280 : 160;
-            let tooltipWidth = Math.max(prevTokenActive ? 360 : 250, 310 + 8 * (tok.length - 12));
+            let tooltipHeight = isDfa ? 100 : (prevTokenActive ? 320 : 160);
+            let tooltipWidth = isDfa ? 200 : (prevTokenActive ? 360 : 250);
+            tooltipWidth = Math.max(tooltipWidth, 310 + 8 * (tok.length - 12));
 
             let tooltipDiv = parent.append("div")
                 .attr("class", "tooltip")
@@ -372,15 +404,19 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
             // Creat the first table
             let firstTable = tableContainer.append("table");
             firstTable.append("tr").html(`<td class="right-aligned">Token</td><td class="left-aligned"><code>${tok.replace(/ /g, '&nbsp;')}</code> (${tokID})</td>`);
-            firstTable.append("tr").html(`<td class="right-aligned">Feature activation</td><td class="left-aligned">${tokValue >= 0 ? '+' : ''}${tokValue.toFixed(3)}</td>`);
-            tableContainer.append("br");
+            firstTable.append("tr").html(`<td class="right-aligned">Dataset position</td><td class="left-aligned">${tokPosn}</td>`);
+            firstTable.append("tr").html(`<td class="right-aligned">${isDfa ? 'DFA' : 'Feature activation'}</td><td class="left-aligned">${tokValue >= 0 ? '+' : ''}${tokValue.toFixed(3)}</td>`);
+            if (!isDfa) {
+                tableContainer.append("br");
+            }
             
             // If previous token is active, we add logit table & loss info
             if (prevTokenActive) {
                 // Loss effect of this feature, and probability change induced by feature
-                firstTable.append("tr").html(`<td class="right-aligned">Loss contribution</td><td class="left-aligned">${lossEffect >= 0 ? '+' : ''}${lossEffect.toFixed(3)}</td>`);
-                if (origProb && newProb) {
-                    firstTable.append("tr").html(`<td class="right-aligned">Δ-prob induced by feature</td><td class="left-aligned">${(newProb*100).toFixed(2)}% → ${(origProb*100).toFixed(2)}%</td>`);
+                firstTable.append("tr").html(`<td class="right-aligned">Logit effect (unnormalized)</td><td class="left-aligned">${logitEffect >= 0 ? '+' : ''}${logitEffect.toFixed(3)}</td>`);
+                firstTable.append("tr").html(`<td class="right-aligned">Loss effect</td><td class="left-aligned">${lossEffect >= 0 ? '+' : ''}${lossEffect.toFixed(3)}</td>`);
+                if (origProb !== null && newProb !== null) {
+                    firstTable.append("tr").html(`<td class="right-aligned">Prob change from feature</td><td class="left-aligned">${(newProb*100).toFixed(2)}% → ${(origProb*100).toFixed(2)}%</td>`);
                 }
                 
                 // Create container for top & bottom logits tables
@@ -388,7 +424,7 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
     
                 // Create the positive table, and fill it with values
                 let posLogitsTable = logitsTableContainer.append("table").attr("class", "half-width")
-                posLogitsTable.append("tr").html(`<td class="center-aligned" colspan="2">Pos logit contributions</td>`);
+                posLogitsTable.append("tr").html(`<td class="center-aligned" colspan="2">Pos logprob contributions</td>`);
                 posToks.forEach((tok, index) => {
                     posLogitsTable.append("tr").html(`
                         <td class="right-aligned"><code>${tok.replace(/ /g, '&nbsp;')}</code></td>
@@ -398,7 +434,7 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
     
                 // Create the negative table, and fill it with values
                 let negLogitsTable = logitsTableContainer.append("table").attr("class", "half-width")
-                negLogitsTable.append("tr").html(`<td class="center-aligned" colspan="2">Neg logit contributions</td>`);
+                negLogitsTable.append("tr").html(`<td class="center-aligned" colspan="2">Neg logprob contributions</td>`);
                 negToks.forEach((tok, index) => {
                     negLogitsTable.append("tr").html(`
                         <td class="right-aligned"><code>${tok}</code></td>
@@ -408,9 +444,11 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
     
             // If previous token is not active, we add a message instead
             } else {
-                tableContainer.append("div")
-                    .style("font-size", "0.8em")
-                    .html("Feature not active on prev token;<br>no predictions were affected.");
+                if (!isDfa) {
+                    tableContainer.append("div")
+                        .style("font-size", "0.8em")
+                        .html("Feature not active on prev token;<br>no predictions were affected.");
+                }
             }
     
             // Add dynamic behaviour: show the tooltip on hover, and also add lines to the two histograms
@@ -512,7 +550,7 @@ function _setupSeqMultiGroupOthello(featureIdx, componentData, containerId) {
         header.append("span")
             .style("background-color", lossColor((+loss || 0), maxLoss))
             .style("margin-right", "10px")
-            .html(`Δ-LOSS <b>${(+loss || 0).toFixed(3)}</b>`);
+            .html(`LOSS <b>${(+loss || 0).toFixed(3)}</b>`);
         // header.append("br")
         // const hoverText = header.append("span")
         //     .style("color", "#888")
@@ -612,7 +650,7 @@ function lossColor(loss, maxLoss, opacity = 0.5) {
 function actColor(value, maxValue, isDfa = false) {
     // Interpolates between white -> orange for [0, maxValue]
     value = Math.min(Math.max(value, 0), maxValue);
-    return d3.interpolate("rgb(255,255,255)", isDfa ? "rgb(255,140,0)" : "rgb(0,255,0)")(value / maxValue);
+    return d3.interpolate("rgb(255,255,255)", isDfa ? "rgb(0,150,50)" : "rgb(255,140,0)")(value / maxValue);
 }
 
 function stringToId(str) {
