@@ -19,6 +19,7 @@ groups.",
     hover_below="Whether the hover information about a token appears below or above the token.",
     othello="If True, we make Othello boards instead of sequences (requires OthelloGPT)",
     n_boards_per_row="Only relevant for Othello, sets number of boards per row in top examples",
+    dfa_for_attn_saes="Only relevant for attention SAEs. If true, shows DFA for top attention tokens.",
 )
 
 ACTIVATIONS_HISTOGRAM_CONFIG_HELP = dict(
@@ -81,8 +82,11 @@ class SeqMultiGroupConfig(BaseComponentConfig):
     top_logits_hoverdata: int = 5
     hover_below: bool = True
 
+    # Everything for specific kinds of SAEs / base models
     othello: bool = False
-    n_boards_per_row: int = 2
+    n_boards_per_row: int = 3
+    dfa_for_attn_saes: bool = True
+    dfa_buffer: tuple[int, int] | None = (5, 5)
 
     def data_is_contained_in(self, other: BaseComponentConfig) -> bool:
         assert isinstance(other, self.__class__)
@@ -94,10 +98,7 @@ class SeqMultiGroupConfig(BaseComponentConfig):
                 int(self.compute_buffer)
                 <= int(other.compute_buffer),  # we can't compute the buffer if we didn't in `other`
                 self.n_quantiles
-                in {
-                    0,
-                    other.n_quantiles,
-                },  # we actually need the quantiles identical (or one to be zero)
+                in [0, other.n_quantiles],  # we actually need the quantiles identical (or one to be zero)
                 self.top_acts_group_size <= other.top_acts_group_size,  # group size needs to be <=
                 self.quantile_group_size <= other.quantile_group_size,  # each quantile group needs to be <=
                 self.top_logits_hoverdata <= other.top_logits_hoverdata,  # hoverdata rows need to be <=

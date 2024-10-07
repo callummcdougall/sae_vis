@@ -58,32 +58,91 @@ def k_largest_indices(
     x: Float[Tensor, "rows cols"],
     k: int,
     largest: bool = True,
-    buffer: tuple[int, int] | None = (5, -5),
+    buffer: tuple[int, int] | None = None,
+    no_overlap: bool = True,
 ) -> Int[Tensor, "k 2"]:
     """
     Args:
         x:
-            2D array of floats (these will be the values of feature activations or losses for each
-            token in our batch)
+            2D array of floats, usually the activatons for our batch of tokens or smth
         k:
             Number of indices to return
         largest:
             Whether to return the indices for the largest or smallest values
         buffer:
-            Positions to avoid at the start / end of the sequence, i.e. we can include the slice buffer[0]: buffer[1].
-            If None, then we use all sequences
+            Positions to avoid at the start / end of the sequence. If None, then we use all sequence positions.
 
     Returns:
         The indices of the top or bottom `k` elements in `x`. In other words, output[i, :] is the (row, column) index of
         the i-th largest/smallest element in `x`.
     """
+    # if buffer is None:
+    #     buffer = (0, x.size(1))
+    # x = x[:, buffer[0] : buffer[1]]
+    # indices = x.flatten().topk(k=k, largest=largest).indices
+    # rows = indices // x.size(1)
+    # cols = indices % x.size(1) + buffer[0]
+    # return torch.stack((rows, cols), dim=1)
+
     if buffer is None:
         buffer = (0, x.size(1))
     x = x[:, buffer[0] : buffer[1]]
-    indices = x.flatten().topk(k=k, largest=largest).indices
+
+    indices = x.flatten().argsort(-1, descending=largest)
     rows = indices // x.size(1)
     cols = indices % x.size(1) + buffer[0]
-    return torch.stack((rows, cols), dim=1)
+
+    if no_overlap:
+        unique_indices = torch.empty((0, 2)).long()
+        while len(unique_indices) < k:
+            unique_indices = torch.cat((unique_indices, torch.tensor([[rows[0], cols[0]]])))
+            is_overlapping_mask = (rows == rows[0]) & ((cols - cols[0]).abs() <= max(abs(buffer[0]), abs(buffer[1])))
+            rows = rows[~is_overlapping_mask]
+            cols = cols[~is_overlapping_mask]
+        return unique_indices
+
+    return torch.stack((rows, cols), dim=1)[:k]
+
+
+def index_with_buffer(
+    x: Float[Tensor, "batch seq"],
+    indices: Int[Tensor, "k 2"],
+    buffer: int | tuple[int, int] | None = None,
+    offset: int = 0,
+) -> Float[Tensor, "k buffer_range"]:
+    """
+    Args:
+        x:
+            2D array of floats, usually the activatons for our batch of tokens or smth
+        indices:
+            Tensor returned from `k_largest_indices`
+        buffer:
+            Positions to avoid at the start / end of the sequence. If None, then we use all sequence positions (so this
+            will mean the values indices[:, 1] don't get used)
+        offset:
+            We add this to all sequence positions. Note that we could just change the buffer instead, but this is easier
+            to work with as an argument.
+
+    Returns:
+        x, indexed into by `indices` and with an optional buffer around it.
+    """
+    if buffer is None:
+        return x[indices[:, 0]]
+
+    rows, cols = indices.unbind(dim=-1)
+    cols = cols + offset
+    if buffer != 0:
+        if isinstance(buffer, int):
+            buffer = (buffer, -buffer)
+        assert buffer[1] < 0, f"Should have negative second buffer entry, found {buffer=}."
+        buffer_width = buffer[0] - buffer[1] + 1
+        rows = einops.repeat(rows, "k -> k buffer", buffer=buffer_width)
+        cols[cols < buffer[0]] = buffer[0]
+        cols[cols > x.size(1) + buffer[1] - 1] = x.size(1) + buffer[1] - 1
+        cols = einops.repeat(cols, "k -> k buffer", buffer=buffer_width) + torch.arange(
+            -buffer[0], -buffer[1] + 1, device=cols.device
+        )
+    return x[rows, cols]
 
 
 def sample_unique_indices(large_number: int, small_number: int) -> Int[Tensor, "small_number"]:
@@ -101,7 +160,7 @@ def random_range_indices(
     x: Float[Tensor, "batch seq"],
     k: int,
     bounds: tuple[float, float],
-    buffer: tuple[int, int] | None = (5, -5),
+    buffer: tuple[int, int] | None = None,
 ) -> Int[Tensor, "k 2"]:
     """
     Args:
@@ -133,7 +192,7 @@ def random_range_indices(
         indices = indices[sample_unique_indices(len(indices), k)]
 
     # Adjust indices to account for the buffer
-    return indices + torch.tensor([0, buffer[0]]).to(indices.device)
+    return indices.cpu() + torch.tensor([0, buffer[0]])
 
 
 # TODO - solve the `get_decode_html_safe_fn` issue
@@ -199,13 +258,13 @@ HTML_ANOMALIES = {
     "ĉ": "&bsol;t",
 }
 HTML_ANOMALIES_REVERSED = {
-    "&mdash": "—",
-    "&ndash": "–",
-    # "&#8203": "​", # TODO: this is actually zero width space character. what's the best way to represent it?
-    "&ldquo": "“",
-    "&rdquo": "”",
-    "&lsquo": "‘",
-    "&rsquo": "’",
+    "&mdash;": "—",
+    "&ndash;": "–",
+    # "&#8203;": "​", # TODO: this is actually zero width space character. what's the best way to represent it?
+    "&ldquo;": "“",
+    "&rdquo;": "”",
+    "&lsquo;": "‘",
+    "&rsquo;": "’",
     "&nbsp;": " ",
     "&bsol;": "\\",
 }
@@ -230,18 +289,21 @@ def process_str_tok(str_tok: str, html: bool = True) -> str:
             e.g. "Ġ" -> " "
         (2) Special HTML characters like "<" should be replaced with their HTML representations
             e.g. "<" -> "&lt;", or " " -> "&nbsp;"
+        (3) Do something special with line breaks: should be "↵"
 
-    We always do (1), the argument `html` determines whether we do (2) as well.
+    We always do (1) and (3), the argument `html` determines whether we do (2) as well.
     """
     for k, v in HTML_ANOMALIES.items():
         str_tok = str_tok.replace(k, v)
+
+    str_tok = str_tok.replace("\n", "↵")
 
     if html:
         # Get rid of the quotes and apostrophes, and replace them with their HTML representations
         for k, v in HTML_QUOTES.items():
             str_tok = str_tok.replace(k, v)
-        # repr turns \n into \\n, while slicing removes the quotes from the repr
-        str_tok = repr(str_tok)[1:-1]
+        # # repr turns \n into \\n, while slicing removes the quotes from the repr
+        # str_tok = repr(str_tok)[1:-1]
 
         # Apply the map from special characters to their HTML representations
         for k, v in HTML_CHARS.items():
@@ -841,9 +903,10 @@ class RollingCorrCoef:
         self.indices = indices
         self.with_self = with_self
 
-    def update(self, x: Float[Tensor, "X N"], y: Float[Tensor, "Y N"]) -> None:
+    def update(self, x: Float[Tensor, "... X"], y: Float[Tensor, "... Y"]) -> None:
         # Get values of x and y, and check for consistency with each other & with previous values
-        assert x.ndim == 2 and y.ndim == 2, "Both x and y should be 2D"
+        x = x.flatten(end_dim=-2).T
+        y = y.flatten(end_dim=-2).T
         X, Nx = x.shape
         Y, Ny = y.shape
         assert Nx == Ny, "Error: x and y should have the same size in the last dimension"

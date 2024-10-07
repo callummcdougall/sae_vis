@@ -1,6 +1,9 @@
 import os
 import sys
 
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 from datasets import load_dataset
 from IPython import get_ipython
 from sae_lens import SAE, HookedSAETransformer
@@ -9,7 +12,6 @@ ipython = get_ipython()
 ipython.run_line_magic("load_ext", "autoreload")  # type: ignore
 ipython.run_line_magic("autoreload", "2")  # type: ignore
 
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 if (SAE_VIS_PATH := "C:/Users/calsm/Documents/AI Alignment/sae-vis") not in sys.path:
     sys.path.insert(0, SAE_VIS_PATH)
 
@@ -28,6 +30,7 @@ from sae_vis.utils_fns import get_device
 
 device = get_device()
 torch.set_grad_enabled(False)
+assert torch.cuda.is_available()
 
 # * [1/5] Feature-centric, vanilla
 
@@ -157,7 +160,7 @@ sae_vis_data.save_feature_centric_vis(
 )
 
 
-# * [5/5] The z-hook model I trained!! Also to see if z works, now I've added a feature for this
+# * [5/5] Attention models
 
 model = HookedSAETransformer.from_pretrained("attn-only-2l-demo")
 

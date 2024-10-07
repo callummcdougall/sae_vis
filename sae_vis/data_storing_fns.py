@@ -261,8 +261,7 @@ class ProbeLogitsTableData:
     @classmethod
     def from_data(
         cls,
-        probe_logits: dict[str, Float[Tensor, "d_vocab"]],
-        probe_acts: dict[str, Float[Tensor, "d_vocab"]],
+        probe_names_and_values: list[tuple[str, Float[Tensor, "d_vocab"]]],
         k: int,
         max_logits: float | None = None,
     ) -> "ProbeLogitsTableData":
@@ -273,19 +272,18 @@ class ProbeLogitsTableData:
         """
         probe_logits_data = {}
 
-        for probe_type, probes in [("output", probe_logits), ("input", probe_acts)]:
-            for name, logits in probes.items():
-                top_logits = TopK(logits, k)
-                bottom_logits = TopK(logits, k, largest=False)
-                probe_logits_data[f"PROBE {name!r}, {probe_type.upper()} SPACE"] = LogitsTableData(
-                    bottom_logits=bottom_logits.values.tolist(),
-                    bottom_token_ids=bottom_logits.indices.tolist(),
-                    top_logits=top_logits.values.tolist(),
-                    top_token_ids=top_logits.indices.tolist(),
-                    vocab_type="probes",
-                    max_logits=max_logits or logits.abs().max().item(),
-                    # max_logits=max_logits or max_or_1([L.abs().max().item() for L in probes.values()]),
-                )
+        for name, logits in probe_names_and_values:
+            top_logits = TopK(logits, k)
+            bottom_logits = TopK(logits, k, largest=False)
+            probe_logits_data[name] = LogitsTableData(
+                bottom_logits=bottom_logits.values.tolist(),
+                bottom_token_ids=bottom_logits.indices.tolist(),
+                top_logits=top_logits.values.tolist(),
+                top_token_ids=top_logits.indices.tolist(),
+                vocab_type="probes",
+                max_logits=max_logits or logits.abs().max().item(),
+                # max_logits=max_logits or max_or_1([L.abs().max().item() for L in probes.values()]),
+            )
         return cls(probe_logits_data=probe_logits_data)
 
     def data(
@@ -312,6 +310,7 @@ class SequenceData:
         feat_acts:          Sizes of activations on this sequence
         feat_acts_idx:      When feat_acts is a length-1 list, this is that index (we need it!)
         loss_contribution:  Effect on loss of this feature, for this particular token (neg = helpful)
+        logit_contribution: Effect on correct logits (pos = helpful)
         orig_prob/new_prob: Original/new prediction for this feature, to help understand better
 
     Data which is visible on hover:
@@ -320,12 +319,18 @@ class SequenceData:
         top_logits:        List of the corresponding 5 changes in logits for those tokens
         bottom_token_ids:  List of the bottom 5 logit-boosted tokens by this feature
         bottom_logits:     List of the corresponding 5 changes in logits for those tokens
+
+    Data which is specific to certain model or SAE classes:
+        dfa_token_ids:     List of the buffer of top DFA source tokens for dest this token (centering on the top one)
+        dfa_values:        List of the corresponding DFA values for those tokens
     """
 
     token_ids: list[int] = field(default_factory=list)
+    token_posns: list[str] = field(default_factory=list)
     feat_acts: list[float] = field(default_factory=list)
     feat_acts_idx: int | None = None
     loss_contribution: list[float] = field(default_factory=list)
+    logit_contribution: list[float] | None = None
     orig_prob: list[float] | None = None
     new_prob: list[float] | None = None
 
@@ -334,6 +339,10 @@ class SequenceData:
     top_logits: list[list[float]] = field(default_factory=list)
     bottom_token_ids: list[list[int]] = field(default_factory=list)
     bottom_logits: list[list[float]] = field(default_factory=list)
+
+    dfa_token_ids: list[int] = field(default_factory=list)
+    dfa_values: list[float] = field(default_factory=list)
+    dfa_token_posns: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """
@@ -362,7 +371,7 @@ class SequenceData:
         cfg: PromptConfig | SeqMultiGroupConfig,
         decode_fn: Callable[[int | list[int], VocabType], str | list[str]],
         component_specific_kwargs: dict[str, Any] = {},
-    ) -> dict[Literal["seqData", "seqMetadata"], Any]:
+    ) -> dict[Literal["seqData", "dfaSeqData", "seqMetadata"], Any]:
         """
         Args:
 
@@ -401,59 +410,66 @@ class SequenceData:
                 "act": act,
                 "loss": loss,
             }
+            dfa_seq_data = []
         else:
             # If we didn't specify bold_idx, then set it to be the midpoint
             if bold_idx is None:
                 bold_idx = self.seq_len // 2
 
-            # If we only have data for the bold token, we pad out everything with zeros or empty lists
-            only_bold = isinstance(cfg, SeqMultiGroupConfig) and not (cfg.compute_buffer)
-            if only_bold:
-                assert bold_idx != "max", "Don't know how to deal with this case yet."
+            def process_data_fn(x: Any):
+                """
+                Handles cases where fields have some entries missing (because we consciously didn't get data for them).
+                """
+                if (not isinstance(x, list)) or (len(x) == 0):
+                    return x
+                # If we only had data for the bold token, then pad the list out.
+                x = deepcopy(x)
+                default = [] if isinstance(x[0], list) else 0.0
+                if isinstance(cfg, SeqMultiGroupConfig) and (not cfg.compute_buffer):
+                    assert bold_idx != "max", "Don't know how to deal with this case yet."
+                    x = [x[0] if (i == bold_idx) + 1 else default for i in range(self.seq_len)]
+                # If we're computing the whole sequence not a buffer, then data for the first token might need padding
+                if (isinstance(cfg, SeqMultiGroupConfig) and (cfg.buffer is None)) or isinstance(cfg, PromptConfig):
+                    if len(x) < self.seq_len:  # TODO - when is this true?
+                        x = [default] + x
+                # At this point, we expect the length of everything to match the length of `self.token_ids`
+                assert len(x) == len(self.token_ids), f"Error: {len(x)=}, {len(self.token_ids)=}"
+                return x
 
-                def pad_data_list(x: Any) -> Any:
-                    if isinstance(x, list):
-                        default = [] if isinstance(x[0], list) else 0.0
-                        return [x[0] if (i == bold_idx) + 1 else default for i in range(self.seq_len)]
-
-                feat_acts = pad_data_list(self.feat_acts)
-                loss_contribution = pad_data_list(self.loss_contribution)
-                orig_prob = pad_data_list(self.orig_prob)
-                new_prob = pad_data_list(self.new_prob)
-                pos_ids = pad_data_list(self.top_token_ids)
-                neg_ids = pad_data_list(self.bottom_token_ids)
-                pos_val = pad_data_list(self.top_logits)
-                neg_val = pad_data_list(self.bottom_logits)
-            else:
-                feat_acts = deepcopy(self.feat_acts)
-                loss_contribution = deepcopy(self.loss_contribution)
-                orig_prob = deepcopy(self.orig_prob)
-                new_prob = deepcopy(self.new_prob)
-                pos_ids = deepcopy(self.top_token_ids)
-                neg_ids = deepcopy(self.bottom_token_ids)
-                pos_val = deepcopy(self.top_logits)
-                neg_val = deepcopy(self.bottom_logits)
-
-            # If we sent in a prompt rather than this being sliced from a longer sequence, then the pos_ids etc will be shorter
-            # than the token list by 1, so we need to pad it at the first token
-            if isinstance(cfg, PromptConfig):
-                pos_ids = [[]] + pos_ids
-                neg_ids = [[]] + neg_ids
-                pos_val = [[]] + pos_val
-                neg_val = [[]] + neg_val
-            # If we're getting the full seq (not a buffer), then self.token_ids will be all tokens, so we need to add one to each of pos_ids, ...
-            assert (
-                len(pos_ids) == len(neg_ids) == len(pos_val) == len(neg_val) == len(self.token_ids)
-            ), f"Unexpected lengths: {len(pos_ids)}, {len(neg_ids)}, {len(pos_val)}, {len(neg_val)}, {len(self.token_ids)}"
+            feat_acts = process_data_fn(self.feat_acts)
+            loss_contribution = process_data_fn(self.loss_contribution)
+            logit_contribution = process_data_fn(self.logit_contribution)
+            orig_prob = process_data_fn(self.orig_prob)
+            new_prob = process_data_fn(self.new_prob)
+            pos_ids = process_data_fn(self.top_token_ids)
+            neg_ids = process_data_fn(self.bottom_token_ids)
+            pos_val = process_data_fn(self.top_logits)
+            neg_val = process_data_fn(self.bottom_logits)
+            dfa_values = process_data_fn(self.dfa_values)
 
             # Process the tokens to get str toks
-            toks = to_str_tokens(self.token_ids, decode_fn, "embed")  # type: ignore
-            pos_toks = [to_str_tokens(pos, decode_fn, "unembed") for pos in pos_ids]  # type: ignore
-            neg_toks = [to_str_tokens(neg, decode_fn, "unembed") for neg in neg_ids]  # type: ignore
+            toks = to_str_tokens(self.token_ids, decode_fn, "embed")
+            pos_toks = [to_str_tokens(pos, decode_fn, "unembed") for pos in pos_ids]
+            neg_toks = [to_str_tokens(neg, decode_fn, "unembed") for neg in neg_ids]
 
             # Get list of data dicts for each token
             seq_data = []
+            dfa_seq_data = []
 
+            # Get DFA data (there's way less of this than for the main sequences)
+            if len(self.dfa_token_ids) > 0:
+                dfa_toks = to_str_tokens(self.dfa_token_ids, decode_fn, "embed")
+                for i in range(len(self.dfa_token_ids)):
+                    kwargs_dfa = dict(
+                        tok=unprocess_str_tok(dfa_toks[i]),
+                        tokID=self.dfa_token_ids[i],
+                        tokPosn=self.dfa_token_posns[i],
+                        dfaValue=dfa_values[i],
+                        # isBold=i == np.argmax(dfa_values).item(),
+                    )
+                    dfa_seq_data.append(kwargs_dfa)
+
+            # Get data for primary sequences
             for i in range(len(self.token_ids)):
                 # We might store a bunch of different case-specific data in the JavaScript object for each token. This is
                 # done in the form of a disjoint union over different dictionaries (which can each be empty or not), this
@@ -471,7 +487,11 @@ class SequenceData:
                         kwargs_bold["permanentLine"] = True
 
                 # If we only have data for the bold token, we hide all other tokens' hoverdata (and skip other kwargs)
-                if only_bold and isinstance(bold_idx, int) and (i not in {bold_idx, bold_idx + 1}):
+                if (
+                    (isinstance(cfg, SeqMultiGroupConfig) and (not cfg.compute_buffer))
+                    and isinstance(bold_idx, int)
+                    and (i not in {bold_idx, bold_idx + 1})
+                ):
                     kwargs_hide["hide"] = True
 
                 else:
@@ -481,9 +501,7 @@ class SequenceData:
 
                     # If feature active on this token, get background color and feature act (for hist line)
                     if abs(feat_acts[i]) > 1e-8:
-                        kwargs_this_token_active = dict(
-                            featAct=round(feat_acts[i], PRECISION),
-                        )
+                        kwargs_this_token_active = dict(featAct=round(feat_acts[i], PRECISION))
 
                     # If prev token active, get the top/bottom logits table, underline color, and loss effect (for hist line)
                     if len(pos_toks[i]) + len(neg_toks[i]) > 0:
@@ -493,6 +511,7 @@ class SequenceData:
                             posVal=pos_val[i],
                             negVal=neg_val[i],
                             lossEffect=round(loss_contribution[i], PRECISION),
+                            logitEffect=round(logit_contribution[i], PRECISION),
                         )
                         if (orig_prob is not None) and (new_prob is not None):
                             kwargs_prev_token_active |= dict(
@@ -507,6 +526,7 @@ class SequenceData:
                     dict(
                         tok=unprocess_str_tok(toks[i]),
                         tokID=self.token_ids[i],
+                        tokPosn=self.token_posns[i],
                         tokenLogit=token_logit,
                         **kwargs_bold,
                         **kwargs_this_token_active,
@@ -517,6 +537,7 @@ class SequenceData:
 
         return {
             "seqData": seq_data,
+            "dfaSeqData": dfa_seq_data,
             "seqMetadata": {},
         }
 
@@ -536,6 +557,7 @@ class SeqGroupData:
 
     seq_data: list[SequenceData] = field(default_factory=list)
     title: str = ""
+    # dfa_title: str = ""
 
     def __len__(self) -> int:
         return len(self.seq_data)
@@ -549,6 +571,11 @@ class SeqGroupData:
     def max_loss_contribution(self) -> float:
         """Returns maximum value of loss contribution over all sequences in this group."""
         return max_or_1([loss for seq in self.seq_data for loss in seq.loss_contribution], abs=True)
+
+    @property
+    def max_dfa_value(self) -> float:
+        """Returns maximum value of DFA values over all sequences in this group."""
+        return max_or_1([value for seq in self.seq_data for value in seq.dfa_values], abs=True)
 
     def _get_seq_group_data(
         self,
@@ -582,11 +609,17 @@ class SeqGroupData:
             max_or_1([loss for seq in self.seq_data for loss in seq.loss_contribution]),
             PRECISION,  # abs=True?
         )
+        max_dfa_value = component_specific_kwargs.get("max_dfa_value", None) or round(
+            max_or_1([value for seq in self.seq_data for value in seq.dfa_values]),
+            PRECISION,
+        )
+
         seqGroupMetadata = {
             "title": self.title,
             "seqGroupId": seq_group_id,
             "maxAct": max_feat_act,
             "maxLoss": max_loss_contribution,
+            "maxDFA": max_dfa_value,
         }
         # Deal with prompt cfg vs sequence cfg mode (we don't need to supply all arguments!)
         if isinstance(cfg, SeqMultiGroupConfig):
@@ -648,6 +681,8 @@ class SeqMultiGroupData:
         max_loss_contribution = component_specific_kwargs.get(
             "max_loss_contribution", self.seq_group_data[0].max_loss_contribution
         )
+        max_dfa_value = component_specific_kwargs.get("max_dfa_value", self.seq_group_data[0].max_dfa_value)
+
         group_sizes = cfg.group_sizes if isinstance(cfg, SeqMultiGroupConfig) else [1]
 
         return [
@@ -658,6 +693,7 @@ class SeqMultiGroupData:
                     group_size=group_size,
                     max_feat_act=max_feat_act,
                     max_loss_contribution=max_loss_contribution,
+                    max_dfa_value=max_dfa_value,
                     seq_group_id=f"seq-group-{i}",
                 ),
             )
@@ -701,8 +737,9 @@ class SaeVisData:
     model: HookedTransformer | None = None
     sae: SAE | None = None
     sae_B: SAE | None = None
-    linear_probes_input: dict[str, Float[Tensor, "d_model d_vocab_out"]] = field(default_factory=dict)
-    linear_probes_output: dict[str, Float[Tensor, "d_model d_vocab_out"]] = field(default_factory=dict)
+    linear_probes: list[tuple[Literal["input", "output"], str, Float[Tensor, "d_model d_vocab_out"]]] = field(
+        default_factory=list
+    )
 
     vocab_dict: dict[VocabType, dict[int, str]] | None = None
 
@@ -734,11 +771,11 @@ class SaeVisData:
         cfg: SaeVisConfig,
         # optional
         sae_B: SAE | None = None,
-        linear_probes_input: dict[str, Float[Tensor, "d_model d_vocab_out"]] = {},
-        linear_probes_output: dict[str, Float[Tensor, "d_model d_vocab_out"]] = {},
+        linear_probes: list[tuple[Literal["input", "output"], str, Float[Tensor, "d_model d_vocab_out"]]] = [],
         target_logits: Float[Tensor, "batch seq d_vocab_out"] | None = None,
         vocab_dict: dict[VocabType, dict[int, str]] | None = None,
         verbose: bool = False,
+        clear_memory_between_batches: bool = False,
     ) -> "SaeVisData":
         """
         Optional args:
@@ -746,15 +783,12 @@ class SaeVisData:
             sae_B: SAE
                 Extra SAE for computing stuff like top feature correlations between the 2 SAEs.
 
-            linear_probes_output: dict[str, Tensor]
-                A dictionary of linear probes, which will each be used to create logit tables that
-                look like the standard top / bottom logits table. For OthelloGPT, we have 3 probes:
-                one for theirs, mine and empty predictions respectively.
-
-            linear_probes_input: dict[str, Tensor]
-                Same as linear_probes_output, except we look at the encoder rather than the
-                decoder (i.e. seeing which features fire on certain probe directions, rather
-                than writing to certain directions).
+            linear_probes: dict[str, Tensor]
+                A list of linear probes, each with label "input" or "output", which will be used to create logit tables
+                resembling the standard top / bottom logits table. For example, an OthelloGPT input probe for the
+                "theirs vs mine" direction would tell us whether the latent is firing strongly if the model thinks the
+                square is "theirs", and an output probe for that direction would tell us if the latent is writing
+                strongly to this direction when it fires.
 
             target_logits: Tensor
                 If supplied, then rather than comparing logits[:, 1:] to tokens[:, :-1], we'll
@@ -772,11 +806,11 @@ class SaeVisData:
             tokens=tokens,
             cfg=cfg,
             sae_B=sae_B,
-            linear_probes_input=linear_probes_input,
-            linear_probes_output=linear_probes_output,
+            linear_probes=linear_probes,
             target_logits=target_logits,
             vocab_dict=vocab_dict,
             verbose=verbose,
+            clear_memory_between_batches=clear_memory_between_batches,
         )
 
     def save_feature_centric_vis(

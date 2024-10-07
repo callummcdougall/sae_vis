@@ -252,34 +252,61 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
             .attr('class', 'seq');
     
         // For each sequence, we iterate over & add all its tokens
-        seqGroupElem.each(function({seqData, seqMetadata}) {
+        // (if DFA tokens exist, we add them first, then add the separator tokens)
+        seqGroupElem.each(function({seqData, dfaSeqData, seqMetadata}) {
+
+            dfaSeqData.forEach(tokData =>
+                generateTokHtmlElement({
+                    parent: d3.select(this), 
+                    tok: tokData.tok,
+                    tokID: tokData.tokID,
+                    tokValue: tokData["dfaValue"],
+                    isDfa: true,
+                })
+            )
+
             seqData.forEach(tokData => {
-                
-                generateTokHtmlElement(
-                    d3.select(this),                    // object we'll append the token to
-                    maxLoss || 1.0,                     // for setting underline color
-                    maxAct || 1.0,                      // for setting background color
-                    tokData.tok,                        // string token
-                    tokData.tokID,                      // token ID (shown on hover, after PR request)
-                    tokData["isBold"] || false,         // is this token bolded?
-                    tokData["featAct"] || 0.0,          // feature activation at this token (used for acts histogram line)
-                    tokData["tokenLogit"] || 0.0,       // raw logit effect on this token (used for logits histogram line)
-                    tokData["lossEffect"] || 0.0,       // effect on loss (used for histogram line), if prev token active
-                    tokData["origProb"] || null,        // orig probability (for hoverinfo)
-                    tokData["newProb"] || null,         // new probability (for hoverinfo)
-                    tokData["posToks"] || [],           // most-positive tokens (strings)
-                    tokData["posVal"] || [],            // most-positive token values
-                    tokData["negToks"] || [],           // most-negative tokens (strings)
-                    tokData["negVal"] || [],            // most-negative token values
-                    tokData["permanentLine"] || false,  // do we show a permanent line on histogram?
-                    tokData["hide"] || false,           // do we suppress hoverdata for this token?
-                );
+
+                generateTokHtmlElement({
+                    parent: d3.select(this), 
+                    tok: tokData.tok,
+                    tokID: tokData.tokID,
+                    isBold: tokData["isBold"],
+                    tokValue: tokData["featAct"],
+                    tokenLogit: tokData["tokenLogit"],
+                    lossEffect: tokData["lossEffect"],
+                    origProb: tokData["origProb"],
+                    newProb: tokData["newProb"],
+                    posToks: tokData["posToks"],
+                    posVal: tokData["posVal"],
+                    negToks: tokData["negToks"],
+                    negVal: tokData["negVal"],
+                    permanentLine: tokData["permanentLine"],
+                    hide: tokData["hide"]
+                });
             });
         });
     });
 
     function generateTokHtmlElement(
-        parent, maxLoss, maxAct, tok, tokID, isBold, featAct, tokenLogit, lossEffect, origProb, newProb, posToks, posVal, negToks, negVal, permanentLine, hide,
+        parent,
+        maxLoss = 1.0,                     // for setting underline color
+        maxAct = 1.0,                      // for setting background color
+        tok,
+        tokID,
+        tokValue = 0.0,                    // either feature activation or attribution value
+        isDfa = false,                     // controls highlight color (dfa src is orange, normal is green)
+        isBold = false,                    // is this token bolded?
+        tokenLogit = 0.0,                  // raw logit effect on this token
+        lossEffect = 0.0,                  // effect on loss
+        origProb = null,                   // orig probability (for hoverinfo)
+        newProb = null,                    // new probability (for hoverinfo)
+        posToks = [],                      // most-positive tokens (as strings)
+        posVal = [],                       // most-positive token values
+        negToks = [],                      // most-negative tokens (as strings)
+        negVal = [],                       // most-negative token values
+        permanentLine = false,             // do we show a permanent line on histogram?
+        hide = false                       // do we suppress hoverdata for this token?
     ) {
         // Figure out if previous token was active (this affects the construction of the tooltip)
         let prevTokenActive = posToks.length + negToks.length > 0;
@@ -291,7 +318,7 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
         // Put actual token in the tokenSpan object (i.e. the thing we see without hovering)    
         tokenSpan.append("span")
             .attr("class", "token")
-            .style("background-color", actColor(featAct, maxAct))
+            .style("background-color", actColor(tokValue, maxAct, isDfa))
             .style("border-bottom", `4px solid ${lossColor(lossEffect, maxLoss, opacity=1)}`)
             .style("font-weight", isBold ? "bold" : "normal")
             .text(tok);
@@ -345,7 +372,7 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
             // Creat the first table
             let firstTable = tableContainer.append("table");
             firstTable.append("tr").html(`<td class="right-aligned">Token</td><td class="left-aligned"><code>${tok.replace(/ /g, '&nbsp;')}</code> (${tokID})</td>`);
-            firstTable.append("tr").html(`<td class="right-aligned">Feature activation</td><td class="left-aligned">${featAct >= 0 ? '+' : ''}${featAct.toFixed(3)}</td>`);
+            firstTable.append("tr").html(`<td class="right-aligned">Feature activation</td><td class="left-aligned">${tokValue >= 0 ? '+' : ''}${tokValue.toFixed(3)}</td>`);
             tableContainer.append("br");
             
             // If previous token is active, we add logit table & loss info
@@ -390,7 +417,7 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
             tokenSpan.on('mouseover', function() {
                 tooltipDiv.style('display', 'flex');
                 tooltipDiv.style('position', 'fixed');
-                addLineHistogram(`actsHistogram-${featureIdx}`, 0, tok, featAct);
+                addLineHistogram(`actsHistogram-${featureIdx}`, 0, tok, tokValue);
                 addLineHistogram(`logitsHistogram-${featureIdx}`, 0, tok, tokenLogit);
             })
             tokenSpan.on('mousemove', function(event) {
@@ -405,7 +432,7 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
     
             // Add static behaviour: if required, then show the permanent line on the histograms, as shapes[1]
             if (permanentLine & isBold) {
-                addLineHistogram(`actsHistogram-${featureIdx}`, 1, tok, featAct);
+                addLineHistogram(`actsHistogram-${featureIdx}`, 1, tok, tokValue);
                 addLineHistogram(`logitsHistogram-${featureIdx}`, 1, tok, tokenLogit);
             }
         }
@@ -582,10 +609,10 @@ function lossColor(loss, maxLoss, opacity = 0.5) {
         : d3.interpolate(`rgba(255,255,255,${opacity})`, `rgba(255,0,0,${opacity})`)(loss / maxLoss)
 }
 
-function actColor(act, maxAct) {
-    // Interpolates between white -> orange for [0, maxAct]
-    act = Math.min(Math.max(act, 0), maxAct);
-    return d3.interpolate("rgb(255,255,255)", "rgb(255,140,0)")(act / maxAct);
+function actColor(value, maxValue, isDfa = false) {
+    // Interpolates between white -> orange for [0, maxValue]
+    value = Math.min(Math.max(value, 0), maxValue);
+    return d3.interpolate("rgb(255,255,255)", isDfa ? "rgb(255,140,0)" : "rgb(0,255,0)")(value / maxValue);
 }
 
 function stringToId(str) {
