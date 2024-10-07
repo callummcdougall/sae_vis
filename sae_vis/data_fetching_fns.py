@@ -327,9 +327,9 @@ def _get_feature_data(
     v_hook_name = utils.get_act_name("v", sae.cfg.hook_layer)
     pattern_hook_name = utils.get_act_name("pattern", sae.cfg.hook_layer)
     cache_dict = {
-        resid_final_hook_name: torch.zeros(batch_size, seq_len, model.cfg.d_model, device=device),
-        acts_post_hook_name: torch.zeros(batch_size, seq_len, len(feature_indices), device=device),
-        # sae_input_hook_name: torch.zeros(batch_size, seq_len, sae.cfg.d_in, device=device),
+        resid_final_hook_name: torch.zeros(batch_size, seq_len, model.cfg.d_model),
+        acts_post_hook_name: torch.zeros(batch_size, seq_len, len(feature_indices)),
+        # sae_input_hook_name: torch.zeros(batch_size, seq_len, sae.cfg.d_in),
     }
     using_dfa = (
         (cfg.feature_centric_layout.seq_cfg is not None)
@@ -337,8 +337,8 @@ def _get_feature_data(
         and (sae.cfg.hook_name.endswith("_z"))
     )
     if using_dfa:
-        cache_dict[v_hook_name] = torch.zeros(batch_size, seq_len, model.cfg.n_heads, model.cfg.d_head, device=device)
-        cache_dict[pattern_hook_name] = torch.zeros(batch_size, model.cfg.n_heads, seq_len, seq_len, device=device)
+        cache_dict[v_hook_name] = torch.zeros(batch_size, seq_len, model.cfg.n_heads, model.cfg.d_head)
+        cache_dict[pattern_hook_name] = torch.zeros(batch_size, model.cfg.n_heads, seq_len, seq_len)
 
     # Create objects to store the data for computing rolling stats
     sae_input_is_privileged = any([sae.cfg.hook_name.endswith(x) for x in ["mlp.hook_pre", "mlp.hook_post"]])
@@ -394,13 +394,15 @@ def _get_feature_data(
 
         # Put these values into the tensors
         batch_slice = slice(start, start + len(minibatch))
-        cache_dict[resid_final_hook_name][batch_slice, seqpos_slice] = cache[resid_final_hook_name][:, seqpos_slice]
-        cache_dict[acts_post_hook_name][batch_slice, seqpos_slice] = feat_acts[:, seqpos_slice]
+        cache_dict[resid_final_hook_name][batch_slice, seqpos_slice] = cache[resid_final_hook_name][
+            :, seqpos_slice
+        ].cpu()
+        cache_dict[acts_post_hook_name][batch_slice, seqpos_slice] = feat_acts[:, seqpos_slice].cpu()
         if using_dfa:
-            cache_dict[v_hook_name][batch_slice, seqpos_slice] = cache[v_hook_name][:, seqpos_slice]
+            cache_dict[v_hook_name][batch_slice, seqpos_slice] = cache[v_hook_name][:, seqpos_slice].cpu()
             cache_dict[pattern_hook_name][batch_slice, :, seqpos_slice, seqpos_slice] = cache[pattern_hook_name][
                 :, seqpos_slice, seqpos_slice
-            ]
+            ].cpu()
 
         # Update the 1st progress bar (fwd passes & getting sequence data dominates the runtime of these computations)
         if progress is not None:
@@ -673,27 +675,27 @@ def get_sequences_data(
         # Get tokens we'll use to index correct logits (all the visible ones)
         token_ids_for_computing_loss = token_ids[:, 1:]
         # Get feature acts for all sequence positions (all visible used for coloring, 1 back used for loss)
-        feat_acts_buf = index_with_buffer(feat_acts, indices_ex, buffer=buffer_full)
+        feat_acts_buf = index_with_buffer(feat_acts, indices_ex, buffer=buffer_full).to(device)
         feat_acts_pre_ablation = feat_acts_buf[:, :-1]
         feat_acts_coloring = feat_acts_buf[:, 1:]
         feat_acts_idx = [None for _ in range(n_ex)]
         # Get residual stream for all sequence positions that come immediately before a visible token (used for loss)
-        resid_post = index_with_buffer(resid_post, indices_ex, buffer=buffer_full)[:, :-1]
+        resid_post = index_with_buffer(resid_post, indices_ex, buffer=buffer_full)[:, :-1].to(device)
     else:
         # Get tokens we'll use to index correct logits (after the bold ones)
-        token_ids_for_computing_loss = index_with_buffer(tokens, indices_ex, buffer=0, offset=1).unsqueeze(1)
+        token_ids_for_computing_loss = index_with_buffer(tokens, indices_ex, buffer=0, offset=1).unsqueeze(1).to(device)
         # Get feature acts for just the bold tokens (used for coloring on bold token & loss on token after bold token)
-        feat_acts_pre_ablation = index_with_buffer(feat_acts, indices_ex, buffer=0).unsqueeze(-1)
+        feat_acts_pre_ablation = index_with_buffer(feat_acts, indices_ex, buffer=0).unsqueeze(-1).to(device)
         feat_acts_coloring = feat_acts_pre_ablation
         feat_acts_idx = indices_ex[:, 1].tolist()  # need to remember which one is the bold one!
         # Get residual stream for just the bold tokens (used for loss on token after bold token)
-        resid_post = index_with_buffer(resid_post, indices_ex, buffer=0).unsqueeze(1)
+        resid_post = index_with_buffer(resid_post, indices_ex, buffer=0).unsqueeze(1).to(device)
 
     # ! (4) Compute the logit effect if this feature is ablated
 
     # Get this feature's output vector, using an outer product over the feature activations for all tokens
     resid_post_feature_effect = einops.einsum(
-        feat_acts_pre_ablation, feature_resid_dir, "n_ex buf, d_model -> n_ex buf d_model"
+        feat_acts_pre_ablation, feature_resid_dir.to(device), "n_ex buf, d_model -> n_ex buf d_model"
     )
 
     # Contribution to logits is computed without normalization
@@ -732,8 +734,8 @@ def get_sequences_data(
     if use_dfa:
         assert seq_cfg.dfa_buffer is not None
         indices_batch, indices_dest = indices_ex.unbind(dim=-1)
-        v = cache[v_hook_name][indices_batch]  # [k src n_heads d_head]
-        pattern = cache[pattern_hook_name][indices_batch, :, indices_dest]  # [k n_heads src]
+        v = cache[v_hook_name][indices_batch].to(device)  # [k src n_heads d_head]
+        pattern = cache[pattern_hook_name][indices_batch, :, indices_dest].to(device)  # [k n_heads src]
         v_weighted = (v * einops.rearrange(pattern, "k n_heads src -> k src n_heads 1")).flatten(-2)  # [k src d_in]
         dfa = v_weighted @ sae.W_enc[:, feat_idx]  # [k src]
         indices_src = dfa.argmax(dim=-1).to(indices_ex.device)  # [k,]
