@@ -248,7 +248,7 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
             .attr('id', seqGroupID)
             .attr('class', 'seq-group');
         
-        if (maxDFA) {
+        if (seqGroupData[0].dfaSeqData.length > 0) {
             // If we're using DFA, then insert the DFA column on the left half, and define a thing on the right half to
             // insert the normal sequences in
             seqGroupContainerOuter.style('display', 'flex');
