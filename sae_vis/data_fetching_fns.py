@@ -227,7 +227,7 @@ def parse_feature_data(
             # Optionally get probes data
             if layout.probe_logits_table_cfg is not None:
                 feature_data_dict[feat]["probeLogitsTables"] = ProbeLogitsTableData.from_data(
-                    probe_names_and_values=probe_names_and_values,
+                    probe_names_and_values=[(name, logits[i]) for name, logits in probe_names_and_values],
                     k=layout.probe_logits_table_cfg.n_rows,
                 )
 
