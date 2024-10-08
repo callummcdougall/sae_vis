@@ -8,10 +8,9 @@ from typing import Any, Callable, Literal
 
 import numpy as np
 from jaxtyping import Float, Int
-from sae_lens import SAE
+from sae_lens import SAE, HookedSAETransformer
 from torch import Tensor
 from tqdm.auto import tqdm
-from transformer_lens import HookedTransformer
 
 from sae_vis.data_config_classes import (
     PromptConfig,
@@ -707,19 +706,20 @@ GenericData = FeatureTablesData | ActsHistogramData | LogitsTableData | LogitsHi
 @dataclass
 class SaeVisData:
     """
+    # TODO - check if this docstring is still correct
+
     This contains all the data necessary for constructing the feature-centric visualization, over multiple
     features (i.e. being able to navigate through them).
 
     Args:
-        feature_data_dict:  Contains data for each individual feature-centric vis. For each feature,
-                            this looks like a dict like {"seqMultiGroup": seqMultiGroupData, ...}.
-        prompt_data_dict:   Contains data for each prompt-centric vis. For each feature, rather than
-                            keys being component names, they're tuple-ified prompts, and the values
-                            are the corresponding SeqMultiGroupData objects (only containing 1
-                            prompt).
+        feature_data_dict:  Contains data for each individual feature-centric vis. For each feature, this looks like a
+                            dict like {"seqMultiGroup": seqMultiGroupData, ...}.
+        prompt_data_dict:   Contains data for each prompt-centric vis. For each feature, rather than keys being
+                            component names, they're tuple-ified prompts, and the values are the corresponding
+                            SeqMultiGroupData objects (only containing 1 prompt).
 
-        feature_stats:      Contains stats over all features (e.g. activation quantiles for each
-                            feature, used for rank-ordering features in the prompt-centric vis)
+        feature_stats:      Contains stats over all features (e.g. activation quantiles for each feature, used for
+                            rank-ordering features in the prompt-centric vis)
         cfg:                The vis config, used for the both the data gathering and the vis layout
 
         model:              Model that our sae was trained on
@@ -734,7 +734,7 @@ class SaeVisData:
     feature_stats: FeatureStatistics = field(default_factory=FeatureStatistics)
     cfg: SaeVisConfig = field(default_factory=SaeVisConfig)
 
-    model: HookedTransformer | None = None
+    model: HookedSAETransformer | None = None
     sae: SAE | None = None
     sae_B: SAE | None = None
     linear_probes: list[tuple[Literal["input", "output"], str, Float[Tensor, "d_model d_vocab_out"]]] = field(
@@ -753,9 +753,8 @@ class SaeVisData:
 
     def update(self, other: "SaeVisData") -> None:
         """
-        Updates a SaeVisData object with the data from another SaeVisData object. This is useful
-        during the `get_feature_data` function, since this function is broken up into different
-        groups of features then merged together.
+        Updates SaeVisData with the data from another SaeVisData object. This is useful during the `get_feature_data`
+        function, since this function is broken up into different groups of features then merged together.
         """
         if other is None:
             return
@@ -766,7 +765,7 @@ class SaeVisData:
     def create(
         cls,
         sae: SAE,
-        model: HookedTransformer,
+        model: HookedSAETransformer,
         tokens: Int[Tensor, "batch seq"],
         cfg: SaeVisConfig,
         # optional
@@ -783,20 +782,23 @@ class SaeVisData:
             sae_B: SAE
                 Extra SAE for computing stuff like top feature correlations between the 2 SAEs.
 
-            linear_probes: dict[str, Tensor]
-                A list of linear probes, each with label "input" or "output", which will be used to create logit tables
-                resembling the standard top / bottom logits table. For example, an OthelloGPT input probe for the
-                "theirs vs mine" direction would tell us whether the latent is firing strongly if the model thinks the
-                square is "theirs", and an output probe for that direction would tell us if the latent is writing
-                strongly to this direction when it fires.
+            linear_probes: list[tuple[str, str, Tensor]]
+                A list of linear probes, which will be used to create tables that go below the logit tables. Each linear
+                probe consists of:
+                    label:   either "input" or "output". If "input" then the table will tell us which probe dirs the sae
+                             fires strongly on; if "output" then it tells us which dirs the sae writes to strongly.
+                    name:    the name of the probe, which will be displayed in the table
+                    weights: the weights of the linear probe, which will be used to compute the table values
+                For example, an OthelloGPT input probe for the "theirs vs mine" direction would tell us if the latent
+                is firing strongly when the model thinks the square is "theirs", and an output probe for that direction
+                would tell us if the latent is writing strongly to this direction when it fires.
 
             target_logits: Tensor
-                If supplied, then rather than comparing logits[:, 1:] to tokens[:, :-1], we'll
-                compare logits[:, 1:] to target_logits, where target_logits is assumed to be a
-                tensor of logprobs. This is useful when e.g. we have models like OthelloGPT whose
-                target distribution isn't deterministic (they match a uniform distribution over
-                legal moves). Note, this isn't practical to use for language models because the
-                vocab is massive; it's more of a special thing for a certain kind of toy models.
+                If supplied, then rather than comparing logits[:, 1:] to tokens[:, :-1], we'll compare logits[:, 1:] to
+                target_logits, where target_logits is assumed to be a tensor of logprobs. This is useful when e.g. we
+                have models like OthelloGPT whose target distribution isn't deterministic (they match a uniform distn
+                over legal moves). Note, this isn't practical to use for language models because the vocab is massive;
+                it's more of a special thing for a certain kind of toy models.
         """
         from sae_vis.data_fetching_fns import get_feature_data
 

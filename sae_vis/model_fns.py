@@ -41,7 +41,7 @@ def to_resid_dir(dir: Float[Tensor, "feats d"], sae: SAE, model: HookedSAETransf
                 )
             )
         case _:
-            raise ValueError(f"Unexpected hook name: {model.hook_point}")
+            raise ValueError(f"Unexpected hook name: {sae.cfg.hook_name}")
 
 
 def resid_final_pre_layernorm_to_logits(x: Tensor, model: HookedTransformer):

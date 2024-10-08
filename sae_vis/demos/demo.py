@@ -62,7 +62,6 @@ sae_vis_data = SaeVisData.create(
     model=model,
     tokens=all_tokens[:8192],  # 8192
     cfg=SaeVisConfig(
-        hook_point=HOOK_NAME,
         features=range(128),  # 256
     ),
     verbose=True,
@@ -96,7 +95,6 @@ sae_vis_data_custom = SaeVisData.create(
     model=model,
     tokens=all_tokens[:4096, :48],  # 4096
     cfg=SaeVisConfig(
-        hook_point=HOOK_NAME,
         features=range(256),  # 256
         feature_centric_layout=layout,
     ),
@@ -168,7 +166,6 @@ sae_vis_data = SaeVisData.create(
     tokens=othello_tokens,
     target_logits=othello_target_logits,
     cfg=SaeVisConfig(
-        hook_point=othellogpt_sae.cfg.hook_name,
         features=alive_feats[:16],
         seqpos_slice=(5, -5),
         feature_centric_layout=SaeVisLayoutConfig.default_othello_layout(),
@@ -224,7 +221,6 @@ sae_vis_data = SaeVisData.create(
     model=attn_model,
     tokens=tokens,
     cfg=SaeVisConfig(
-        hook_point=sae_id,
         features=alive_feats[:32],
     ),
     verbose=True,

@@ -481,7 +481,6 @@ OOMs.",
 @dataclass
 class SaeVisConfig:
     # Data
-    hook_point: str | None = None
     features: int | Iterable[int] | None = None
     minibatch_size_features: int = 256
     minibatch_size_tokens: int = 64

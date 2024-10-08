@@ -199,6 +199,7 @@ def parse_feature_data(
         for i, feat in enumerate(feature_indices):
             # Get logits histogram data (no title)
             if layout.logits_hist_cfg is not None:
+                # TODO - create more things like this, with `from_data` methods for the data-holding classes
                 feature_data_dict[feat]["logitsHistogram"] = LogitsHistogramData.from_data(
                     data=logits[i],
                     n_bins=layout.logits_hist_cfg.n_bins,
@@ -306,7 +307,7 @@ def _get_feature_data(
             optionally printed at the end of the `get_feature_data` function, if `verbose=True`.
     """
     # ! Boring setup code
-    time_logs = {"(1) Forward passes to gather model activations": 0.0}
+    time_logs = defaultdict(float)
     batch_size, seq_len = tokens.shape
 
     # Make feature_indices a list, for convenience
@@ -447,7 +448,7 @@ def _get_feature_data(
 @torch.inference_mode()
 def get_feature_data(
     sae: SAE,
-    model: HookedTransformer,
+    model: HookedSAETransformer,
     tokens: Int[Tensor, "batch seq"],
     cfg: SaeVisConfig,
     sae_B: SAE | None = None,
@@ -476,12 +477,7 @@ def get_feature_data(
 
     # Create objects to store all the data we'll get from `_get_feature_data`
     sae_vis_data = SaeVisData(
-        model=model,
-        cfg=cfg,
-        sae=sae,
-        sae_B=sae_B,
-        linear_probes=linear_probes,
-        vocab_dict=vocab_dict,
+        model=model, cfg=cfg, sae=sae, sae_B=sae_B, linear_probes=linear_probes, vocab_dict=vocab_dict
     )
     time_logs = defaultdict(float)
 
@@ -509,10 +505,6 @@ def get_feature_data(
         ]
     else:
         progress = None
-
-    # If the model is from TransformerLens, we need to apply a wrapper to it for standardization
-    assert isinstance(model, HookedSAETransformer)
-    assert isinstance(cfg.hook_point, str)
 
     # For each batch of features: get new data and update global data storage objects
     for features in feature_batches:
@@ -977,8 +969,6 @@ def get_prompt_data(
     assert isinstance(sae, SAE)
     model = sae_vis_data.model
     assert isinstance(model, HookedSAETransformer)
-    cfg = sae_vis_data.cfg
-    assert isinstance(cfg.hook_point, str), f"{cfg.hook_point=}, expected a string"
 
     str_toks: list[str] = model.tokenizer.tokenize(prompt)  # type: ignore
     tokens = model.tokenizer.encode(prompt, return_tensors="pt").to(device)  # type: ignore
