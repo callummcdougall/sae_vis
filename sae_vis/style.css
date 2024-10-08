@@ -118,18 +118,16 @@ select {
 
 /* ! Sequences */
 
-/* Margin at the bottom of every sequence group, plus handle how overflow works (maybe not necessary) */
 .seq-group {
-    overflow-x: auto;
-    overflow-y: visible;
-    padding-bottom: 10px;
-    margin-bottom: 10px;
+    overflow-x: auto; /* adds horizontal scrollbar */
+    overflow-y: visible; /* ? don't think this changes behaviour anymore */
+    padding-bottom: 5px; /* bit more room between last seq and horizontal scrollbar */
+    padding-top: 5px;  /* so you can see the black bars on the top of tokens */
+    margin-bottom: 10px; /* gap between vertically stacked seq groups */
 }
-/* Margin between single sequences */
 .seq {
-    margin-bottom: 11px;
+    margin-bottom: 11px; /* space between sequences within a group */
 }
-/* Styling for each token in a sequence */
 .token {
     font-size: 0.8em;
     border-top-left-radius: 3px;
@@ -137,7 +135,7 @@ select {
     padding: 1px;
     color: black;
     display: inline;
-    white-space: pre-wrap;
+    white-space: pre-wrap; /* preserves whitespaces in seq tokens */
 }
 /* All the messy hovering stuff! */
 .hover-text {
@@ -147,9 +145,10 @@ select {
     box-sizing: border-box;
 }
 .tooltip {
-    font-family: 'system-ui';
+    font-family: 'system-ui'; /* fields in hover text shouldn't be code font */
+    font-size: 1.1em;
     background-color: #fff;
-    color: #333;
+    color: #333; /* ? why is this here? */
     text-align: center;
     border-radius: 10px;
     padding: 5px;
@@ -157,12 +156,11 @@ select {
     align-items: center;
     justify-content: center;
     overflow: hidden;
-    font-size: 1.1em;
     display: none;
     position: fixed;
     z-index: 1000;
-
-    code {
+    /* to stand out from rest of tooltip content, code should have grey background */
+    code { 
         font-family: Consolas;
         background-color: #ddd;
         padding: 0px 3px;
@@ -226,6 +224,7 @@ table span {
     background-color: #ddd;
     padding: 0px 4px;
     border-radius: 3px;
+    white-space: pre-wrap; /* preserves whitespaces in table tokens */
 }
 .table-container {
     width: 100%;

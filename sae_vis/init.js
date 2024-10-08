@@ -239,14 +239,14 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
         const {seqGroupData, seqGroupMetadata} = seqGroup;
         const {seqGroupID, title, maxAct, maxLoss, maxDFA} = seqGroupMetadata;
 
-        if (title) {
-            seqGroupsContainer.append('div').html(`<h4>${title}</h4>`);
-        }
+        if (title) seqGroupsContainer.append('div').html(`<h4>${title}</h4>`);
 
         var seqGroupContainerInner;
         const seqGroupContainerOuter = seqGroupsContainer.append('div')
             .attr('id', seqGroupID)
             .attr('class', 'seq-group');
+
+        if (seqGroupData.length == 0) return;
         
         if (seqGroupData[0].dfaSeqData.length > 0) {
             // If we're using DFA, then insert the DFA column on the left half, and define a thing on the right half to
@@ -401,50 +401,50 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
             // Next, create a table container, to contain 2 tables: one with basics (acts & loss effect), one with per-token logits
             let tableContainer = tooltipDiv.append("div").attr("class", "table-container");
     
-            // Creat the first table
+            // Create the first table (if this is DFA then we stop here, and don't add anything else)
             let firstTable = tableContainer.append("table");
             firstTable.append("tr").html(`<td class="right-aligned">Token</td><td class="left-aligned"><code>${tok.replace(/ /g, '&nbsp;')}</code> (${tokID})</td>`);
             firstTable.append("tr").html(`<td class="right-aligned">Dataset position</td><td class="left-aligned">${tokPosn}</td>`);
+            // if (Math.abs(tokValue) > 0) {
             firstTable.append("tr").html(`<td class="right-aligned">${isDfa ? 'DFA' : 'Feature activation'}</td><td class="left-aligned">${tokValue >= 0 ? '+' : ''}${tokValue.toFixed(3)}</td>`);
+            
             if (!isDfa) {
                 tableContainer.append("br");
-            }
-            
-            // If previous token is active, we add logit table & loss info
-            if (prevTokenActive) {
-                // Loss effect of this feature, and probability change induced by feature
-                firstTable.append("tr").html(`<td class="right-aligned">Logit effect (unnormalized)</td><td class="left-aligned">${logitEffect >= 0 ? '+' : ''}${logitEffect.toFixed(3)}</td>`);
-                firstTable.append("tr").html(`<td class="right-aligned">Loss effect</td><td class="left-aligned">${lossEffect >= 0 ? '+' : ''}${lossEffect.toFixed(3)}</td>`);
-                if (origProb !== null && newProb !== null) {
-                    firstTable.append("tr").html(`<td class="right-aligned">Prob change from feature</td><td class="left-aligned">${(newProb*100).toFixed(2)}% → ${(origProb*100).toFixed(2)}%</td>`);
-                }
                 
-                // Create container for top & bottom logits tables
-                let logitsTableContainer = tableContainer.append("div").attr("class", "half-width-container")
-    
-                // Create the positive table, and fill it with values
-                let posLogitsTable = logitsTableContainer.append("table").attr("class", "half-width")
-                posLogitsTable.append("tr").html(`<td class="center-aligned" colspan="2">Pos logprob contributions</td>`);
-                posToks.forEach((tok, index) => {
-                    posLogitsTable.append("tr").html(`
-                        <td class="right-aligned"><code>${tok.replace(/ /g, '&nbsp;')}</code></td>
-                        <td class="left-aligned">${posVal[index] > 0 ? '+' : ''}${posVal[index].toFixed(3)}</td>
-                    `);
-                });
-    
-                // Create the negative table, and fill it with values
-                let negLogitsTable = logitsTableContainer.append("table").attr("class", "half-width")
-                negLogitsTable.append("tr").html(`<td class="center-aligned" colspan="2">Neg logprob contributions</td>`);
-                negToks.forEach((tok, index) => {
-                    negLogitsTable.append("tr").html(`
-                        <td class="right-aligned"><code>${tok}</code></td>
-                        <td class="left-aligned">${negVal[index] > 0 ? '+' : ''}${negVal[index].toFixed(3)}</td>
-                    `);
-                });
-    
-            // If previous token is not active, we add a message instead
-            } else {
-                if (!isDfa) {
+                // If previous token is active, we add logit table & loss info
+                if (prevTokenActive) {
+                    // Loss effect of this feature, and probability change induced by feature
+                    firstTable.append("tr").html(`<td class="right-aligned">Logit effect (unnormalized)</td><td class="left-aligned">${logitEffect >= 0 ? '+' : ''}${logitEffect.toFixed(3)}</td>`);
+                    firstTable.append("tr").html(`<td class="right-aligned">Loss effect</td><td class="left-aligned">${lossEffect >= 0 ? '+' : ''}${lossEffect.toFixed(3)}</td>`);
+                    if (origProb !== null && newProb !== null) {
+                        firstTable.append("tr").html(`<td class="right-aligned">Prob change from feature</td><td class="left-aligned">${(newProb*100).toFixed(2)}% → ${(origProb*100).toFixed(2)}%</td>`);
+                    }
+                    
+                    // Create container for top & bottom logits tables
+                    let logitsTableContainer = tableContainer.append("div").attr("class", "half-width-container")
+        
+                    // Create the positive table, and fill it with values
+                    let posLogitsTable = logitsTableContainer.append("table").attr("class", "half-width")
+                    posLogitsTable.append("tr").html(`<td class="center-aligned" colspan="2">Pos logprob contributions</td>`);
+                    posToks.forEach((tok, index) => {
+                        posLogitsTable.append("tr").html(`
+                            <td class="right-aligned"><code>${tok.replace(/ /g, '&nbsp;')}</code></td>
+                            <td class="left-aligned">${posVal[index] > 0 ? '+' : ''}${posVal[index].toFixed(3)}</td>
+                        `);
+                    });
+        
+                    // Create the negative table, and fill it with values
+                    let negLogitsTable = logitsTableContainer.append("table").attr("class", "half-width")
+                    negLogitsTable.append("tr").html(`<td class="center-aligned" colspan="2">Neg logprob contributions</td>`);
+                    negToks.forEach((tok, index) => {
+                        negLogitsTable.append("tr").html(`
+                            <td class="right-aligned"><code>${tok}</code></td>
+                            <td class="left-aligned">${negVal[index] > 0 ? '+' : ''}${negVal[index].toFixed(3)}</td>
+                        `);
+                    });
+        
+                // If previous token is not active, we add a message instead
+                } else {
                     tableContainer.append("div")
                         .style("font-size", "0.8em")
                         .html("Feature not active on prev token;<br>no predictions were affected.");
@@ -456,7 +456,7 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
                 tooltipDiv.style('display', 'flex');
                 tooltipDiv.style('position', 'fixed');
                 addLineHistogram(`actsHistogram-${featureIdx}`, 0, tok, tokValue);
-                addLineHistogram(`logitsHistogram-${featureIdx}`, 0, tok, tokenLogit);
+                if (!isDfa) addLineHistogram(`logitsHistogram-${featureIdx}`, 0, tok, tokenLogit);
             })
             tokenSpan.on('mousemove', function(event) {
                 tooltipDiv.style('left', `${event.clientX - tooltipWidth / 2}px`);
@@ -471,7 +471,7 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
             // Add static behaviour: if required, then show the permanent line on the histograms, as shapes[1]
             if (permanentLine & isBold) {
                 addLineHistogram(`actsHistogram-${featureIdx}`, 1, tok, tokValue);
-                addLineHistogram(`logitsHistogram-${featureIdx}`, 1, tok, tokenLogit);
+                if (!isDfa) addLineHistogram(`logitsHistogram-${featureIdx}`, 1, tok, tokenLogit);
             }
         }
     }
