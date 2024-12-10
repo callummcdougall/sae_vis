@@ -306,6 +306,7 @@ class SequenceData:
 
     Always-visible data:
         token_ids:          List of token IDs in the sequence
+        token_posns:        Strings of "(batch_idx, seq_idx)" for our tokens (only for vis)
         feat_acts:          Sizes of activations on this sequence
         feat_acts_idx:      When feat_acts is a length-1 list, this is that index (we need it!)
         loss_contribution:  Effect on loss of this feature, for this particular token (neg = helpful)
@@ -322,6 +323,7 @@ class SequenceData:
     Data which is specific to certain model or SAE classes:
         dfa_token_ids:     List of the buffer of top DFA source tokens for dest this token (centering on the top one)
         dfa_values:        List of the corresponding DFA values for those tokens
+        dfa_token_posns:   Strings of "(batch_idx, seq_idx)" for our dfa tokens (only for vis)
     """
 
     token_ids: list[int] = field(default_factory=list)
@@ -525,7 +527,7 @@ class SequenceData:
                     dict(
                         tok=unprocess_str_tok(toks[i]),
                         tokID=self.token_ids[i],
-                        tokPosn=self.token_posns[i],
+                        tokPosn=self.token_posns[i] if self.token_posns else "",
                         tokenLogit=token_logit,
                         **kwargs_bold,
                         **kwargs_this_token_active,

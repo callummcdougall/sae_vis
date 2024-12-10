@@ -60,9 +60,9 @@ sae_vis_data = SaeVisData.create(
     sae=sae,
     sae_B=sae_B,
     model=model,
-    tokens=all_tokens[:8192],  # 8192
+    tokens=all_tokens[:2048],  # 8192
     cfg=SaeVisConfig(
-        features=range(128),  # 256
+        features=range(64),  # 256
     ),
     verbose=True,
 )
