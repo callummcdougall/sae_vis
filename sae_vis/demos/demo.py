@@ -60,10 +60,8 @@ sae_vis_data = SaeVisData.create(
     sae=sae,
     sae_B=sae_B,
     model=model,
-    tokens=all_tokens[:2048],  # 8192
-    cfg=SaeVisConfig(
-        features=range(64),  # 256
-    ),
+    tokens=all_tokens[:4096],  # 8192
+    cfg=SaeVisConfig(features=range(128)), # 256
     verbose=True,
 )
 sae_vis_data.save_feature_centric_vis(filename=str(DEMOS_PATH / "_demo_feature_vis.html"), feature=8)

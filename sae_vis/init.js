@@ -417,7 +417,7 @@ function _setupSeqMultiGroupStandard(featureIdx, componentData, containerId) {
                     firstTable.append("tr").html(`<td class="right-aligned">Logit effect (unnormalized)</td><td class="left-aligned">${logitEffect >= 0 ? '+' : ''}${logitEffect.toFixed(3)}</td>`);
                     firstTable.append("tr").html(`<td class="right-aligned">Loss effect</td><td class="left-aligned">${lossEffect >= 0 ? '+' : ''}${lossEffect.toFixed(3)}</td>`);
                     if (origProb !== null && newProb !== null) {
-                        firstTable.append("tr").html(`<td class="right-aligned">Prob change from feature</td><td class="left-aligned">${(newProb*100).toFixed(2)}% → ${(origProb*100).toFixed(2)}%</td>`);
+                        firstTable.append("tr").html(`<td class="right-aligned">Prob change from feature</td><td class="left-aligned">${(newProb*100).toFixed(2)}% to ${(origProb*100).toFixed(2)}%</td>`);
                     }
                     
                     // Create container for top & bottom logits tables
