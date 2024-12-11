@@ -1,7 +1,7 @@
 from dataclasses import asdict, dataclass, field
-from typing import Any, Iterable, Iterator, Literal
+from typing import Any, Iterable, Iterator
 
-from dataclasses_json import dataclass_json
+from frozendict import frozendict
 from rich import print as rprint
 from rich.table import Table
 from rich.tree import Tree
@@ -16,10 +16,10 @@ groups.",
     top_acts_group_size="Number of sequences in the 'top activating sequences' group.",
     quantile_group_size="Number of sequences in each of the sequence quantile groups.",
     top_logits_hoverdata="Number of top/bottom logits to show in the hoverdata for each token.",
-    stack_mode="How to stack the sequence groups.\n  'stack-all' = all groups are stacked in a single column \
-(scrolls vertically if it overflows)\n  'stack-quantiles' = first col contains top acts, second col contains all \
-quantile groups\n  'stack-none' = we stack in a way which ensures no vertical scrolling.",
     hover_below="Whether the hover information about a token appears below or above the token.",
+    othello="If True, we make Othello boards instead of sequences (requires OthelloGPT)",
+    n_boards_per_row="Only relevant for Othello, sets number of boards per row in top examples",
+    dfa_for_attn_saes="Only relevant for attention SAEs. If true, shows DFA for top attention tokens.",
 )
 
 ACTIVATIONS_HISTOGRAM_CONFIG_HELP = dict(
@@ -32,6 +32,10 @@ LOGITS_HISTOGRAM_CONFIG_HELP = dict(
 
 LOGITS_TABLE_CONFIG_HELP = dict(
     n_rows="Number of top/bottom logits to show in the table.",
+)
+
+PROBE_LOGITS_TABLE_CONFIG_HELP = dict(
+    n_rows="Number of top/bottom logits to show in the table, for each probe.",
 )
 
 FEATURE_TABLES_CONFIG_HELP = dict(
@@ -69,15 +73,20 @@ class PromptConfig(BaseComponentConfig):
 
 
 @dataclass
-class SequencesConfig(BaseComponentConfig):
+class SeqMultiGroupConfig(BaseComponentConfig):
     buffer: tuple[int, int] | None = (5, 5)
     compute_buffer: bool = True
     n_quantiles: int = 10
     top_acts_group_size: int = 20
     quantile_group_size: int = 5
     top_logits_hoverdata: int = 5
-    stack_mode: Literal["stack-all", "stack-quantiles", "stack-none"] = "stack-all"
     hover_below: bool = True
+
+    # Everything for specific kinds of SAEs / base models
+    othello: bool = False
+    n_boards_per_row: int = 3
+    dfa_for_attn_saes: bool = True
+    dfa_buffer: tuple[int, int] | None = (5, 5)
 
     def data_is_contained_in(self, other: BaseComponentConfig) -> bool:
         assert isinstance(other, self.__class__)
@@ -94,10 +103,10 @@ class SequencesConfig(BaseComponentConfig):
                     other.compute_buffer
                 ),  # we can't compute the buffer if we didn't in `other`
                 self.n_quantiles
-                in {
+                in [
                     0,
                     other.n_quantiles,
-                },  # we actually need the quantiles identical (or one to be zero)
+                ],  # we actually need the quantiles identical (or one to be zero)
                 self.top_acts_group_size
                 <= other.top_acts_group_size,  # group size needs to be <=
                 self.quantile_group_size
@@ -158,6 +167,20 @@ class LogitsTableConfig(BaseComponentConfig):
 
 
 @dataclass
+class ProbeLogitsTablesConfig(BaseComponentConfig):
+    n_rows: int = 10
+    othello: bool = False
+
+    def data_is_contained_in(self, other: BaseComponentConfig) -> bool:
+        assert isinstance(other, self.__class__)
+        return self.n_rows <= other.n_rows
+
+    @property
+    def help_dict(self) -> dict[str, str]:
+        return PROBE_LOGITS_TABLE_CONFIG_HELP
+
+
+@dataclass
 class FeatureTablesConfig(BaseComponentConfig):
     n_rows: int = 3
     neuron_alignment_table: bool = True
@@ -184,10 +207,11 @@ class FeatureTablesConfig(BaseComponentConfig):
 
 GenericComponentConfig = (
     PromptConfig
-    | SequencesConfig
+    | SeqMultiGroupConfig
     | ActsHistogramConfig
     | LogitsHistogramConfig
     | LogitsTableConfig
+    | ProbeLogitsTablesConfig
     | FeatureTablesConfig
 )
 
@@ -211,7 +235,6 @@ class Column:
         return len(self.components)
 
 
-@dataclass_json
 @dataclass
 class SaeVisLayoutConfig:
     """
@@ -224,30 +247,58 @@ class SaeVisLayoutConfig:
             The height of the vis (in pixels).
 
     Args (defined during __init__):
-        seq_cfg:
-            The `SequencesConfig` object, which contains all the parameters for the top activating sequences (and the
+        seq_cfg: SeqMultiGroupConfig
+            Contains all the parameters for the top activating sequences (and the
             quantile groups).
-        act_hist_cfg:
-            The `ActsHistogramConfig` object, which contains all the parameters for the activations histogram.
-        logits_hist_cfg:
-            The `LogitsHistogramConfig` object, which contains all the parameters for the logits histogram.
-        logits_table_cfg:
-            The `LogitsTableConfig` object, which contains all the parameters for the logits table.
-        feature_tables_cfg:
-            The `FeatureTablesConfig` object, which contains all the parameters for the feature tables.
-        prompt_cfg:
-            The `PromptConfig` object, which contains all the parameters for the prompt-centric vis.
+        act_hist_cfg: ActsHistogramConfig
+            Contains all the parameters for the activations histogram.
+        logits_hist_cfg: LogitsHistogramConfig
+            Contains all the parameters for the logits histogram.
+        logits_table_cfg: LogitsTableConfig
+            Contains all the parameters for the logits table.
+        probe_logits_table_cfg: ProbeLogitsTablesConfig
+            Contains all the parameters for the probe logits table.
+        feature_tables_cfg: FeatureTablesConfig
+            Contains all the parameters for the feature tables.
+        prompt_cfg: PromptConfig
+            Contains all the parameters for the prompt-centric vis.
     """
 
-    columns: dict[int | tuple[int, int], Column] = field(default_factory=dict)
+    columns: dict[int, Column] = field(default_factory=dict)
     height: int = 750
 
-    seq_cfg: SequencesConfig | None = None
+    seq_cfg: SeqMultiGroupConfig | None = None
     act_hist_cfg: ActsHistogramConfig | None = None
     logits_hist_cfg: LogitsHistogramConfig | None = None
     logits_table_cfg: LogitsTableConfig | None = None
+    probe_logits_table_cfg: ProbeLogitsTablesConfig | None = None
     feature_tables_cfg: FeatureTablesConfig | None = None
     prompt_cfg: PromptConfig | None = None
+
+    COMPONENT_MAP: frozendict[str, str] = frozendict(
+        {
+            "Prompt": "prompt_cfg",
+            "SeqMultiGroup": "seq_cfg",
+            "ActsHistogram": "act_hist_cfg",
+            "LogitsHistogram": "logits_hist_cfg",
+            "LogitsTable": "logits_table_cfg",
+            "ProbeLogitsTables": "probe_logits_table_cfg",
+            "FeatureTables": "feature_tables_cfg",
+        }
+    )
+
+    def get_cfg_from_name(self, comp_name: str) -> Any:
+        if comp_name in self.COMPONENT_MAP:
+            return getattr(self, self.COMPONENT_MAP[comp_name])
+        raise ValueError(f"Unknown component name {comp_name}")
+
+    @property
+    def components(self):
+        """Returns a dictionary mapping component names (lowercase) to their configs, filtering out Nones."""
+        all_components = {
+            k[0].lower() + k[1:]: self.get_cfg_from_name(k) for k in self.COMPONENT_MAP
+        }
+        return {k: v for k, v in all_components.items() if v is not None}
 
     def __init__(self, columns: list[Column], height: int = 750):
         """
@@ -269,27 +320,47 @@ class SaeVisLayoutConfig:
         assert len(all_component_names) == len(
             set(all_component_names)
         ), "Duplicate components in layout config"
-        self.components: dict[str, BaseComponentConfig] = {
-            name: comp for name, comp in zip(all_component_names, all_components)
-        }
 
         # Once we've verified this, store each config component as an attribute
         for comp, comp_name in zip(all_components, all_component_names):
-            match comp_name:
-                case "Prompt":
-                    self.prompt_cfg = comp
-                case "Sequences":
-                    self.seq_cfg = comp
-                case "ActsHistogram":
-                    self.act_hist_cfg = comp
-                case "LogitsHistogram":
-                    self.logits_hist_cfg = comp
-                case "LogitsTable":
-                    self.logits_table_cfg = comp
-                case "FeatureTables":
-                    self.feature_tables_cfg = comp
-                case _:
-                    raise ValueError(f"Unknown component name {comp_name}")
+            if comp_name in self.COMPONENT_MAP:
+                setattr(self, self.COMPONENT_MAP[comp_name], comp)
+            else:
+                raise ValueError(f"Unknown component name {comp_name}")
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        """
+        Returns string-ified METADATA, to be dumped into the JavaScript page. Fpr example, default
+        Othello layout would return:
+
+            {
+                "layout": [["featureTables"], ["actsHistogram", "logitsTable"], ["seqMultiGroup"]],
+                "othello": True,
+            }
+        """
+
+        def config_name_to_component_name(config_name: str) -> str:
+            component_name = config_name.rstrip("Config")
+            component_name = component_name[0].lower() + component_name[1:]
+            if component_name == "sequences":
+                component_name = "seqMultiGroup"
+            return component_name
+
+        layout = [
+            [config_name_to_component_name(comp.__class__.__name__) for comp in column]
+            for column in self.columns.values()
+        ]
+        othello = self.seq_cfg.othello if (self.seq_cfg is not None) else False
+
+        column_widths = [column.width for column in self.columns.values()]
+
+        return {
+            "layout": layout,
+            "othello": othello,
+            "columnWidths": column_widths,
+            "height": self.height,
+        }
 
     def data_is_contained_in(self, other: "SaeVisLayoutConfig") -> bool:
         """
@@ -358,11 +429,9 @@ class SaeVisLayoutConfig:
 
                     # Add tree node (appearance is different if value is changed from default)
                     if value != value_default:
-                        info = f"[b dark_orange]{param}: {value!r}[/] ({value_default!r}) \n[i]{desc}[/i]{suffix}"
+                        info = f"[b dark_orange]{param}: {value!r}[/] (default = {value_default!r}) \n[i #888888]{desc}[/]{suffix}"
                     else:
-                        info = (
-                            f"[b #00aa00]{param}: {value!r}[/] \n[i]{desc}[/i]{suffix}"
-                        )
+                        info = f"[b #00aa00]{param}: {value!r}[/] \n[i #888888]{desc}[/]{suffix}"
                     tree_component.add(info)
 
         rprint(tree)
@@ -375,7 +444,7 @@ class SaeVisLayoutConfig:
                 Column(
                     ActsHistogramConfig(), LogitsTableConfig(), LogitsHistogramConfig()
                 ),
-                Column(SequencesConfig(stack_mode="stack-none")),
+                Column(SeqMultiGroupConfig()),
             ],
             height=750,
         )
@@ -388,11 +457,36 @@ class SaeVisLayoutConfig:
                     PromptConfig(),
                     ActsHistogramConfig(),
                     LogitsTableConfig(n_rows=5),
-                    SequencesConfig(top_acts_group_size=10, n_quantiles=0),
-                    width=450,
+                    SeqMultiGroupConfig(top_acts_group_size=10, n_quantiles=0),
+                    LogitsHistogramConfig(),
+                    width=420,
                 ),
             ],
-            height=1000,
+            height=1100,
+        )
+
+    @classmethod
+    def default_othello_layout(cls, boards: bool = True) -> "SaeVisLayoutConfig":
+        return cls(
+            columns=[
+                Column(FeatureTablesConfig()),
+                Column(
+                    ActsHistogramConfig(),
+                    LogitsTableConfig(),
+                    ProbeLogitsTablesConfig(),
+                ),
+                Column(
+                    SeqMultiGroupConfig(
+                        othello=boards,
+                        buffer=None,
+                        compute_buffer=not boards,
+                        n_quantiles=5,
+                        quantile_group_size=6,
+                        top_acts_group_size=24,
+                    ),
+                ),
+            ],
+            height=1250,
         )
 
 
@@ -415,14 +509,13 @@ OOMs.",
 )
 
 
-@dataclass_json
 @dataclass
 class SaeVisConfig:
     # Data
-    hook_point: str | None = None
     features: int | Iterable[int] | None = None
     minibatch_size_features: int = 256
     minibatch_size_tokens: int = 64
+    seqpos_slice: tuple[int | None, ...] = (None, None, None)
 
     # Vis
     feature_centric_layout: SaeVisLayoutConfig = field(
@@ -434,7 +527,6 @@ class SaeVisConfig:
 
     # Misc
     seed: int | None = 0
-    verbose: bool = False
 
     # Depreciated
     batch_size: None = None
@@ -443,10 +535,9 @@ class SaeVisConfig:
         assert (
             self.batch_size is None
         ), "The `batch_size` parameter has been depreciated. Please use `minibatch_size_tokens` instead."
-
-    def to_dict(self) -> dict[str, Any]:
-        """Used for type hinting (the actual method comes from the `dataclass_json` decorator)."""
-        ...
+        assert (
+            len(self.prompt_centric_layout.columns) == 1
+        ), "Only allowed a single column for prompt-centric layout."
 
     def help(self, title: str = "SaeVisConfig"):
         """

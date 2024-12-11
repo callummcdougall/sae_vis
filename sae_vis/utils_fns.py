@@ -1,5 +1,5 @@
-# %%
-
+import copy
+import itertools
 import re
 from dataclasses import dataclass, field
 from typing import (
@@ -7,7 +7,7 @@ from typing import (
     Callable,
     Iterable,
     Literal,
-    Sequence,
+    TypeAlias,
     TypeVar,
     overload,
 )
@@ -18,37 +18,41 @@ import torch
 from dataclasses_json import dataclass_json
 from eindex import eindex
 from jaxtyping import Bool, Float, Int
+from matplotlib import colors
+from tabulate import tabulate
 from torch import Tensor
 from tqdm import tqdm
 from transformer_lens import utils
-from transformers import PreTrainedTokenizerBase
 
+VocabType: TypeAlias = Literal["embed", "unembed", "probes"]
+Arr = np.ndarray
 T = TypeVar("T")
 
-# from rich.progress import ProgressColumn, Task # MofNCompleteColumn
-# from rich.text import Text
-# from rich.table import Column
+BG_COLOR_MAP = colors.LinearSegmentedColormap.from_list(
+    "bg_color_map", ["white", "darkorange"]
+)
 
 
 def get_device() -> torch.device:
     """
     Helper function to return the correct device (cuda, mps, or cpu).
     """
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
-    return device
+    return torch.device(
+        "mps"
+        if torch.backends.mps.is_available()
+        else "cuda"
+        if torch.cuda.is_available()
+        else "cpu"
+    )
 
-
-# # Depreciated - we no longer use a global device variable
-# device = get_device()
-
-Arr = np.ndarray
 
 MAIN = __name__ == "__main__"
+
+METRIC_TITLES = {
+    "act_size": "Activation Size",
+    "act_quantile": "Activation Quantile",
+    "loss_effect": "Loss Effect",
+}
 
 
 def create_iterator(
@@ -64,32 +68,97 @@ def k_largest_indices(
     x: Float[Tensor, "rows cols"],
     k: int,
     largest: bool = True,
-    buffer: tuple[int, int] | None = (5, -5),
+    buffer: tuple[int, int] | None = None,
+    no_overlap: bool = True,
 ) -> Int[Tensor, "k 2"]:
     """
     Args:
         x:
-            2D array of floats (these will be the values of feature activations or losses for each
-            token in our batch)
+            2D array of floats, usually the activatons for our batch of tokens or smth
         k:
             Number of indices to return
         largest:
             Whether to return the indices for the largest or smallest values
         buffer:
-            Positions to avoid at the start / end of the sequence, i.e. we can include the slice buffer[0]: buffer[1].
-            If None, then we use all sequences
+            Positions to avoid at the start / end of the sequence. If None, then we use all sequence positions.
 
     Returns:
         The indices of the top or bottom `k` elements in `x`. In other words, output[i, :] is the (row, column) index of
         the i-th largest/smallest element in `x`.
     """
+    # if buffer is None:
+    #     buffer = (0, x.size(1))
+    # x = x[:, buffer[0] : buffer[1]]
+    # indices = x.flatten().topk(k=k, largest=largest).indices
+    # rows = indices // x.size(1)
+    # cols = indices % x.size(1) + buffer[0]
+    # return torch.stack((rows, cols), dim=1)
+
     if buffer is None:
         buffer = (0, x.size(1))
     x = x[:, buffer[0] : buffer[1]]
-    indices = x.flatten().topk(k=k, largest=largest).indices
+
+    indices = x.flatten().argsort(-1, descending=largest)
     rows = indices // x.size(1)
     cols = indices % x.size(1) + buffer[0]
-    return torch.stack((rows, cols), dim=1)
+
+    if no_overlap:
+        unique_indices = torch.empty((0, 2)).long()
+        while len(unique_indices) < k:
+            unique_indices = torch.cat(
+                (unique_indices, torch.tensor([[rows[0], cols[0]]]))
+            )
+            is_overlapping_mask = (rows == rows[0]) & (
+                (cols - cols[0]).abs() <= max(abs(buffer[0]), abs(buffer[1]))
+            )
+            rows = rows[~is_overlapping_mask]
+            cols = cols[~is_overlapping_mask]
+        return unique_indices
+
+    return torch.stack((rows, cols), dim=1)[:k]
+
+
+def index_with_buffer(
+    x: Float[Tensor, "batch seq"],
+    indices: Int[Tensor, "k 2"],
+    buffer: int | tuple[int, int] | None = None,
+    offset: int = 0,
+) -> Float[Tensor, "k buffer_range"]:
+    """
+    Args:
+        x:
+            2D array of floats, usually the activatons for our batch of tokens or smth
+        indices:
+            Tensor returned from `k_largest_indices`
+        buffer:
+            Positions to avoid at the start / end of the sequence. If None, then we use all sequence positions (so this
+            will mean the values indices[:, 1] don't get used)
+        offset:
+            We add this to all sequence positions. Note that we could just change the buffer instead, but this is easier
+            to work with as an argument.
+
+    Returns:
+        x, indexed into by `indices` and with an optional buffer around it.
+    """
+    if buffer is None:
+        return x[indices[:, 0]]
+
+    rows, cols = indices.unbind(dim=-1)
+    cols = cols + offset
+    if buffer != 0:
+        if isinstance(buffer, int):
+            buffer = (buffer, -buffer)
+        assert (
+            buffer[1] < 0
+        ), f"Should have negative second buffer entry, found {buffer=}."
+        buffer_width = buffer[0] - buffer[1] + 1
+        rows = einops.repeat(rows, "k -> k buffer", buffer=buffer_width)
+        cols[cols < buffer[0]] = buffer[0]
+        cols[cols > x.size(1) + buffer[1] - 1] = x.size(1) + buffer[1] - 1
+        cols = einops.repeat(cols, "k -> k buffer", buffer=buffer_width) + torch.arange(
+            -buffer[0], -buffer[1] + 1, device=cols.device
+        )
+    return x[rows, cols]
 
 
 def sample_unique_indices(
@@ -109,7 +178,7 @@ def random_range_indices(
     x: Float[Tensor, "batch seq"],
     k: int,
     bounds: tuple[float, float],
-    buffer: tuple[int, int] | None = (5, -5),
+    buffer: tuple[int, int] | None = None,
 ) -> Int[Tensor, "k 2"]:
     """
     Args:
@@ -141,49 +210,37 @@ def random_range_indices(
         indices = indices[sample_unique_indices(len(indices), k)]
 
     # Adjust indices to account for the buffer
-    return indices + torch.tensor([0, buffer[0]]).to(indices.device)
+    return indices.cpu() + torch.tensor([0, buffer[0]])
 
 
 # TODO - solve the `get_decode_html_safe_fn` issue
 # The verion using `tokenizer.decode` is much slower, but Stefan's raised issues about it not working correctly for e.g.
 # Cyrillic characters. I think patching the `vocab_dict` in some way is the best solution.
 
-# def get_decode_html_safe_fn(tokenizer, html: bool = False) -> Callable[[int | list[int]], str | list[str]]:
-#     '''
-#     Creates a tokenization function on single integer token IDs, which is HTML-friendly.
-#     '''
-#     def decode(token_id: int | list[int]) -> str | list[str]:
-#         '''
-#         Check this is a single token
-#         '''
-#         if isinstance(token_id, int):
-#             str_tok = tokenizer.decode(token_id)
-#             return process_str_tok(str_tok, html=html)
-#         else:
-#             str_toks = tokenizer.batch_decode(token_id)
-#             return [process_str_tok(str_tok, html=html) for str_tok in str_toks]
-
-#     return decode
-
 
 def get_decode_html_safe_fn(
-    tokenizer: PreTrainedTokenizerBase, html: bool = False
-) -> Callable[[int | list[int]], str | list[str]]:
-    vocab_dict = {v: k for k, v in tokenizer.vocab.items()}  # type: ignore
+    vocab_dict: dict[VocabType, dict[int, str]],
+    html: bool = False,
+) -> Callable[[int | list[int], VocabType], str | list[str]]:
+    """
+    Returns a function which will take a token id (or list of ids) as well as an optional keyword
+    argument to specify the vocab type, and returns the corresponding string token(s).
+    """
 
-    def decode(token_id: int | list[int]) -> str | list[str]:
-        """
-        Check this is a single token
-        """
+    def decode_fn(token_id: int | list[int], vocab_type: VocabType) -> str | list[str]:
+        assert (
+            _vocab_dict := vocab_dict[vocab_type]
+        ), f"Error: vocab_type {vocab_type} not found, only types are {vocab_dict.keys()}."
+
         if isinstance(token_id, int):
-            str_tok = vocab_dict.get(token_id, "UNK")
+            str_tok = _vocab_dict.get(token_id, "UNK")
             return process_str_tok(str_tok, html=html)
         else:
             if isinstance(token_id, torch.Tensor):
                 token_id = token_id.tolist()
-            return [decode(tok) for tok in token_id]  # type: ignore
+            return [decode_fn(tok) for tok in token_id]  # type: ignore
 
-    return decode
+    return decode_fn
 
 
 # # Code to test this function:
@@ -219,13 +276,13 @@ HTML_ANOMALIES = {
     "ĉ": "&bsol;t",
 }
 HTML_ANOMALIES_REVERSED = {
-    "&mdash": "—",
-    "&ndash": "–",
-    # "&#8203": "​", # TODO: this is actually zero width space character. what's the best way to represent it?
-    "&ldquo": "“",
-    "&rdquo": "”",
-    "&lsquo": "‘",
-    "&rsquo": "’",
+    "&mdash;": "—",
+    "&ndash;": "–",
+    # "&#8203;": "​", # TODO: this is actually zero width space character. what's the best way to represent it?
+    "&ldquo;": "“",
+    "&rdquo;": "”",
+    "&lsquo;": "‘",
+    "&rsquo;": "’",
     "&nbsp;": " ",
     "&bsol;": "\\",
 }
@@ -250,18 +307,21 @@ def process_str_tok(str_tok: str, html: bool = True) -> str:
             e.g. "Ġ" -> " "
         (2) Special HTML characters like "<" should be replaced with their HTML representations
             e.g. "<" -> "&lt;", or " " -> "&nbsp;"
+        (3) Do something special with line breaks: should be "↵"
 
-    We always do (1), the argument `html` determines whether we do (2) as well.
+    We always do (1) and (3), the argument `html` determines whether we do (2) as well.
     """
     for k, v in HTML_ANOMALIES.items():
         str_tok = str_tok.replace(k, v)
+
+    str_tok = str_tok.replace("\n", "↵")
 
     if html:
         # Get rid of the quotes and apostrophes, and replace them with their HTML representations
         for k, v in HTML_QUOTES.items():
             str_tok = str_tok.replace(k, v)
-        # repr turns \n into \\n, while slicing removes the quotes from the repr
-        str_tok = repr(str_tok)[1:-1]
+        # # repr turns \n into \\n, while slicing removes the quotes from the repr
+        # str_tok = repr(str_tok)[1:-1]
 
         # Apply the map from special characters to their HTML representations
         for k, v in HTML_CHARS.items():
@@ -284,21 +344,24 @@ def unprocess_str_tok(str_tok: str) -> str:
 
 @overload
 def to_str_tokens(
-    decode_fn: Callable[[int | list[int]], str | list[str]],
     tokens: int,
+    decode_fn: Callable[[int | list[int], VocabType], str | list[str]],
+    vocab_type: VocabType = "embed",
 ) -> str: ...
 
 
 @overload
 def to_str_tokens(
-    decode_fn: Callable[[int | list[int]], str | list[str]],
     tokens: list[int],
+    decode_fn: Callable[[int | list[int], VocabType], str | list[str]],
+    vocab_type: VocabType = "embed",
 ) -> list[str]: ...
 
 
 def to_str_tokens(
-    decode_fn: Callable[[int | list[int]], str | list[str]],
     tokens: int | list[int] | torch.Tensor,
+    decode_fn: Callable[[int | list[int], VocabType], str | list[str]],
+    vocab_type: VocabType = "embed",
 ) -> str | Any:
     """
     Helper function which converts tokens to their string representations, but (if tokens is a tensor) keeps
@@ -306,14 +369,14 @@ def to_str_tokens(
     """
     # Deal with the int case separately
     if isinstance(tokens, int):
-        return decode_fn(tokens)
+        return decode_fn(tokens, vocab_type)
 
     # If the tokens are a (possibly nested) list, turn them into a tensor
     if isinstance(tokens, list):
         tokens = torch.tensor(tokens)
 
     # Get flattened list of tokens
-    str_tokens = [decode_fn(t) for t in tokens.flatten().tolist()]
+    str_tokens = [decode_fn(t, vocab_type) for t in tokens.flatten().tolist()]
 
     # Reshape
     return np.reshape(str_tokens, tokens.shape).tolist()
@@ -342,7 +405,7 @@ class TopK:
         self.largest = largest
         self.values, self.indices = self.topk(tensor, tensor_mask)
 
-    def __getitem__(self, item: int) -> "TopK":
+    def __getitem__(self, item: int | slice) -> "TopK":
         new_topk = TopK.__new__(TopK)
         new_topk.k = self.k
         new_topk.largest = self.largest
@@ -875,13 +938,8 @@ class RollingCorrCoef:
         with_self: bool = False,
     ) -> None:
         """
-        Args:
-            indices: list[int]
-                If supplied, we map y indices (from 0 to y.shape) to these values. Useful when we're working with e.g.
-                a dataset which didn't start from 0, and we want the "true indices".
-            with_self: bool
-                If True, then we take X and Y as coming from the same dataset. This saves us some computation, and it
-                also means we exclude the diagonal from final topk (since correlation with self is always 1).
+        If we want to remove diagonals (because the corrcoef is with self), then we pass `with_self=True`.
+        We also pass a list of indices, if they're not just range(X).
         """
         self.n = 0
         self.X = None
@@ -889,16 +947,15 @@ class RollingCorrCoef:
         self.indices = indices
         self.with_self = with_self
 
-    def update(self, x: Float[Tensor, "X N"], y: Float[Tensor, "Y N"]) -> None:
+    def update(self, x: Float[Tensor, "... X"], y: Float[Tensor, "... Y"]) -> None:
         # Get values of x and y, and check for consistency with each other & with previous values
-        assert x.ndim == 2 and y.ndim == 2, "Both x and y should be 2D"
+        x = x.flatten(end_dim=-2).T
+        y = y.flatten(end_dim=-2).T
         X, Nx = x.shape
         Y, Ny = y.shape
         assert (
             Nx == Ny
         ), "Error: x and y should have the same size in the last dimension"
-        if self.with_self:
-            assert X == Y, "If with_self is True, then x and y should be the same shape"
         if self.X is not None:
             assert (
                 X == self.X
@@ -915,18 +972,16 @@ class RollingCorrCoef:
             self.x_sum = torch.zeros(X, device=x.device)
             self.xy_sum = torch.zeros(X, Y, device=x.device)
             self.x2_sum = torch.zeros(X, device=x.device)
-            if not self.with_self:
-                self.y_sum = torch.zeros(Y, device=y.device)
-                self.y2_sum = torch.zeros(Y, device=y.device)
+            self.y_sum = torch.zeros(Y, device=y.device)
+            self.y2_sum = torch.zeros(Y, device=y.device)
 
         # Next, update the sums
         self.n += x.shape[-1]
         self.x_sum += einops.reduce(x, "X N -> X", "sum")
         self.xy_sum += einops.einsum(x, y, "X N, Y N -> X Y")
         self.x2_sum += einops.reduce(x**2, "X N -> X", "sum")
-        if not self.with_self:
-            self.y_sum += einops.reduce(y, "Y N -> Y", "sum")
-            self.y2_sum += einops.reduce(y**2, "Y N -> Y", "sum")
+        self.y_sum += einops.reduce(y, "Y N -> Y", "sum")
+        self.y2_sum += einops.reduce(y**2, "Y N -> Y", "sum")
 
     def corrcoef(
         self,
@@ -934,11 +989,6 @@ class RollingCorrCoef:
         """
         Computes the correlation coefficients between x and y, using the formulae given in the class docstring.
         """
-        # Get y_sum and y2_sum (to deal with the cases when with_self is True/False)
-        if self.with_self:
-            self.y_sum = self.x_sum
-            self.y2_sum = self.x2_sum
-
         # Compute cosine sim
         cossim_numer = self.xy_sum
         cossim_denom = torch.sqrt(torch.outer(self.x2_sum, self.y2_sum)) + 1e-6
@@ -959,9 +1009,10 @@ class RollingCorrCoef:
 
         # If with_self, we exclude the diagonal
         if self.with_self:
-            d = cossim.shape[0]
-            cossim[range(d), range(d)] = 0.0
-            pearson[range(d), range(d)] = 0.0
+            x_indices = range(cossim.shape[0])
+            y_indices = self.indices or range(cossim.shape[0])
+            cossim[x_indices, y_indices] = 0.0
+            pearson[x_indices, y_indices] = 0.0
 
         return pearson, cossim
 
@@ -997,12 +1048,11 @@ class RollingCorrCoef:
         # Get the cossim values for the top pearson values, i.e. cossim_values[X, k] = cossim[X, pearson_indices[X, k]]
         cossim_values = eindex(cossim, pearson_topk.indices, "X [X k]")
 
-        # If we've supplied indices, use them to offset the returned pearson topk indices
-        indices = pearson_topk.indices.tolist()
-        if self.indices is not None:
-            indices = [[self.indices[i] for i in x] for x in indices]
-
-        return indices, pearson_topk.values.tolist(), cossim_values.tolist()
+        return (
+            pearson_topk.indices.tolist(),
+            pearson_topk.values.tolist(),
+            cossim_values.tolist(),
+        )
 
 
 @dataclass_json
@@ -1091,10 +1141,7 @@ class HistogramData:
         )
 
 
-# %%
-
-
-def max_or_1(mylist: Sequence[float | int], abs: bool = False) -> float | int:
+def max_or_1(mylist: Iterable[float | int], abs: bool = False) -> float | int:
     """
     Returns max of a list, or 1 if the list is empty.
 
@@ -1102,6 +1149,8 @@ def max_or_1(mylist: Sequence[float | int], abs: bool = False) -> float | int:
         mylist: list of numbers
         abs: If True, then we take the max of the absolute values of the list
     """
+    mylist = list(mylist)
+
     if len(mylist) == 0:
         return 1
 
@@ -1109,3 +1158,303 @@ def max_or_1(mylist: Sequence[float | int], abs: bool = False) -> float | int:
         return max(max(x, -x) for x in mylist)
     else:
         return max(mylist)
+
+
+LEGAL_SQUARES = [i for i in range(64) if i not in [27, 28, 35, 36]]
+SQUARE_NAMES = [r + c for r in "ABCDEFGH" for c in "01234567"]
+LEGAL_SQUARE_NAMES = [SQUARE_NAMES[i] for i in LEGAL_SQUARES]
+
+
+def get_row_col_from_move(move: int) -> tuple[int, int]:
+    # move is in range [1, ..., 60] and we want to get zeroindexed rows and columns, steps are:
+    # - subtract 1 to get [0, ..., 59]
+    # - fill in empty squares to get [0, ..., 63] minus {27, 28, 35, 36}
+    # - divmod to get rows and columns
+    # Examples: 1 -> (0, 0), 60 -> (7, 7), 27 -> (3, 2), 28 -> (3, 5)
+    move -= 1
+    return divmod(LEGAL_SQUARES[move], 8)
+
+
+def test_get_row_col_from_move():
+    assert get_row_col_from_move(1) == (0, 0)
+    assert get_row_col_from_move(60) == (7, 7)
+    assert get_row_col_from_move(27) == (3, 2)
+    assert get_row_col_from_move(28) == (3, 5)
+
+
+@overload
+def compute_othello_board_state_and_valid_moves(
+    moves: list[int],
+    move_indices: int | None = None,
+    ditch_game_buffer: int | bool = False,
+) -> dict[str, Any] | str: ...
+
+
+@overload
+def compute_othello_board_state_and_valid_moves(
+    moves: list[int],
+    move_indices: list[int] | Literal["all", "all-except-last"] = "all",
+    ditch_game_buffer: int | bool = False,
+) -> list[dict[str, Any]] | str: ...
+
+
+def compute_othello_board_state_and_valid_moves(
+    moves: list[int],
+    move_indices: list[int] | Literal["all", "all-except-last"] | int | None = None,
+    ditch_game_buffer: int | bool = False,
+) -> list[dict[str, Any]] | dict[str, Any] | str:
+    """
+    Args:
+        moves:          List of token IDs of moves (i.e. they're in range 1 - 60, where 1 = pass)
+
+        move_indices:   List of move indices we'll be using (i.e. we plot the board state after this
+                        many moves have been made). If None, we only plot the final board state. If
+                        "all", we plot the board state after every move (including before any moves).
+
+        ditch_game_buffer:
+                        There's usually no need to ditch the board if e.g. the last move was invalid,
+                        since we'll be looking for top activations in a [5, -5] buffer. This argument
+                        helps us do this: if int then only ditch violations inside an [int, -int]
+                        buffer, if False then we ditch nothing, if True then we ditch everything.
+
+    Return type is an error string if the game is invalid, else it's a dict (or list of dicts, one
+    for each move index we're plotting) with the following keys:
+
+        board:          The current state of the Othello board
+        valid_moves:    A list of bools, where valid_moves[r][c] is True if the current player can
+                        place a piece at (r, c)
+        last_move:      The row and column of the previous move (or arbitrary piece that was already
+                        there if it's the first move)
+        captured:       1s and 0s for whether a piece was captured.
+    """
+    if move_indices is None:
+        move_indices = [len(moves)]
+    elif move_indices == "all":
+        move_indices = list(range(len(moves) + 1))
+    elif move_indices == "all-except-last":
+        move_indices = list(range(len(moves)))
+    elif isinstance(move_indices, int):
+        move_indices = [move_indices]
+
+    def is_valid_move(board: list[list[int]], row: int, col: int, player: int):
+        if board[row][col] != 0:
+            return False
+        for dr, dc in itertools.product([-1, 0, 1], repeat=2):
+            if dr == 0 and dc == 0:
+                continue
+            r, c = row + dr, col + dc
+            if 0 <= r < 8 and 0 <= c < 8 and board[r][c] == 3 - player:
+                while 0 <= r < 8 and 0 <= c < 8 and board[r][c] != 0:
+                    if board[r][c] == player:
+                        return True
+                    r, c = r + dr, c + dc
+        return False
+
+    def get_valid_moves(board: list[list[int]], player: int):
+        valid_moves = [
+            [int(is_valid_move(board, r, c, player)) for c in range(8)]
+            for r in range(8)
+        ]
+        any_valid = any(any(row) for row in valid_moves)
+        return (valid_moves, any_valid)
+
+    def make_move(board: list[list[int]], row: int, col: int, player: int):
+        """
+        Edits board state, and returns an array of captured pieces, as well as a boolean for whether
+        the move was legal (if it didn't capture any pieces, it's not legal).
+        """
+        captured = [[0 for _ in range(8)] for _ in range(8)]
+        board[row][col] = player
+        is_legal = False
+        for dr, dc in itertools.product([-1, 0, 1], repeat=2):
+            if dr == 0 and dc == 0:
+                continue
+            r, c = row + dr, col + dc
+            to_flip = []
+            while 0 <= r < 8 and 0 <= c < 8 and board[r][c] == 3 - player:
+                to_flip.append((r, c))
+                r, c = r + dr, c + dc
+            if 0 <= r < 8 and 0 <= c < 8 and board[r][c] == player:
+                is_legal = is_legal or (len(to_flip) > 0)
+                for flip_r, flip_c in to_flip:
+                    board[flip_r][flip_c] = player
+                    captured[flip_r][flip_c] = 1
+        return (captured, is_legal)
+
+    board = [[0 for _ in range(8)] for _ in range(8)]
+    board[3][3] = board[4][4] = 2  # White
+    board[3][4] = board[4][3] = 1  # Black
+    player = 1  # Black starts
+    results = []
+    row = col = 3  # start with arbitrary previous move
+    captured = [[0 for _ in range(8)] for _ in range(8)]
+
+    for i, move in enumerate(moves + [None]):
+        can_ditch_game = (ditch_game_buffer is True) or (
+            isinstance(ditch_game_buffer, int) and i <= (len(moves) - ditch_game_buffer)
+        )
+
+        valid_moves, any_valid = get_valid_moves(board, player)
+
+        # If we're not at endgame, and there are no valid moves, then ditch the game
+        if (move is not None) and (not any_valid) and can_ditch_game:
+            return "no valid moves"
+
+        if i in move_indices:
+            results.append(
+                {
+                    "board": copy.deepcopy(board),
+                    "valid": valid_moves,
+                    "move": [row, col],
+                    "captured": captured,
+                }
+            )
+
+        if move is None:
+            break
+
+        row, col = get_row_col_from_move(move)  # type: ignore
+        captured, is_legal = make_move(board, row, col, player)
+
+        # If the move wasn't legal, then we ditch the game
+        if (not is_legal) and can_ditch_game:
+            return "no captures"
+
+        player = 3 - player  # Switch player
+
+    return results[0] if len(results) == 1 else results
+
+
+def othello_valid_legal_moves_as_target_distribution(
+    tokens: Int[Tensor, "batch seq"],
+) -> tuple[
+    Int[Tensor, "batchFiltered seq"], Float[Tensor, "batchFiltered seq d_vocab"]
+]:
+    """
+    Idea: measuring cross entropy loss in Othello is misleading, since even though there is always
+    one correct prediction, the correct target distribution is uniform over all correct moves. So we
+    instead return a tensor of shape (batch, seq, d_vocab) representing the correct logprobs for
+    next moves for Othello at that point.
+
+    When writing this function, I was confused about how some games have no legal moves at certain
+    points, and this messes up the progression of the game. So this function will filter out those
+    games, and give me target distributions.
+    """
+    batch_size, seq_len = tokens.shape
+    # target_distributions = torch.zeros(batch_size, seq_len, 61)
+    valid_tokens = []
+    target_distributions = []
+    errors = {"no captures": 0, "no valid moves": 0, "valid": 0}
+    ditch_game_buffer = True
+
+    iterator = tqdm(tokens) if batch_size >= 500 else tokens
+
+    for seq in iterator:
+        results = compute_othello_board_state_and_valid_moves(
+            moves=seq.tolist(),
+            move_indices="all-except-last",
+            ditch_game_buffer=ditch_game_buffer,  # TODO - can make this 5? Doesn't really matter
+        )
+        # First way it might be an invalid game: if one of the moves didn't capture anything
+        if isinstance(results, str):
+            errors[results] += 1
+            continue
+
+        valid_moves = [r["valid"] for r in results]
+        target_distribution = torch.tensor(valid_moves).flatten(1)  # (seq, 8*8=64)
+        target_distribution = target_distribution[:, LEGAL_SQUARES]  # (seq, 60)
+
+        # We should have valid games past this point, i.e. there was always a legal move to play
+        assert (target_distribution.sum(-1) > 0).all().item()
+        valid_tokens.append(seq)
+        target_distribution = torch.concat(
+            [torch.zeros(seq_len, 1), target_distribution], -1
+        )  # (seq, 61)
+        target_distributions.append((15 * target_distribution).log_softmax(-1))
+        errors["valid"] += 1
+
+    print(tabulate(errors.items(), ["Class", "Count"], tablefmt="simple_outline"))
+
+    return torch.stack(valid_tokens), torch.stack(target_distributions)[:, 1:]
+
+
+def test_compute_othello_board_state():
+    # Test invalid game: this move didn't capture anything
+    game_prefix = [1]
+    results = compute_othello_board_state_and_valid_moves(game_prefix, "all")
+    assert results == "no captures"
+
+    # ? Test invalid game: this move produced a board with no valid moves
+
+    # Test valid game
+    game_prefix = [20, 21]
+    results = compute_othello_board_state_and_valid_moves(game_prefix, "all")
+    assert not isinstance(results, str)
+    assert len(results) == 3
+    assert results[0]["board"] == [
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 2, 1, 0, 0, 0],
+        [0, 0, 0, 1, 2, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+    ]
+    assert results[0]["valid"] == [
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 1, 0, 0, 0, 0],
+        [0, 0, 1, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 1, 0, 0],
+        [0, 0, 0, 0, 1, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+    ]
+    assert results[1]["board"] == [
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 1, 0, 0, 0, 0],
+        [0, 0, 0, 1, 1, 0, 0, 0],
+        [0, 0, 0, 1, 2, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+    ]
+    assert results[1]["captured"] == [
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 1, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+    ]
+
+
+def visualize_compute_othello_board_state():
+    game_prefix = [20, 21, 28, 23, 13, 5, 34, 19, 16, 43, 14, 30, 22, 40, 47, 48]
+    results = compute_othello_board_state_and_valid_moves(
+        game_prefix, move_indices="all"
+    )
+    assert not isinstance(results, str)
+    for i, result in enumerate(results):
+        print(f"Move {i}:")
+        for row in result["board"]:
+            print("  " + "".join(str(sq) if sq != 0 else "." for sq in row))
+
+
+def cross_entropy_loss(
+    logits: Float[Tensor, "... d"], target_logits: Float[Tensor, "... d"]
+) -> Float[Tensor, "..."]:
+    """
+    Version of CE loss that works with a target logits tensor, rather than class indices.
+    """
+    assert (
+        logits.shape == target_logits.shape
+    ), f"Error: {logits.shape=}, {target_logits.shape=}"
+    target_probs = target_logits.softmax(-1)
+    logprobs = logits.log_softmax(-1)
+
+    return -(logprobs * target_probs).sum(-1)

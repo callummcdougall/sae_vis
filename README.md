@@ -1,39 +1,21 @@
-Note - I'm planning for a major refactor of this library soon - branch can be found [here](https://github.com/callummcdougall/sae_vis/tree/callum/v3) (containing demo examples too). The current way it works is an unholy patchwork of Python / HTML / JavaScript; the new version is much simpler: the vis is created with a minimal pre-existing HTML framework, instead it's populated using JavaScript, and the only way Python interfaces with JavaScript is to dump a single `DATA` dictionary into the JavaScript page. I've also created an Othello SAE vis, pictured below (also see it on my [personal website homepage](https://www.perfectlynormal.co.uk/)). I plan to get around to pushing updates to this library in late September / early October, so watch this space!
-
-<img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/saevis-demos/othellogpt-demo.png" width="800">
+Note - I'm still open to accepting PRs on this library, and am very happy for other people to build on it, but I won't be actively maintaining it going forwards since I'll be focusing on my job. The [SAELens](https://github.com/jbloomAus/SAELens) library will continue to have more development and iteration, and it uses a fork of this repo as well as containing a much larger suite of tools for working with SAEs, so depending on your use case you might find that library preferable!
 
 ---
-
-# Summary
 
 This codebase was designed to replicate Anthropic's sparse autoencoder visualisations, which you can see [here](https://transformer-circuits.pub/2023/monosemantic-features/vis/a1.html). The codebase provides 2 different views: a **feature-centric view** (which is like the one in the link, i.e. we look at one particular feature and see things like which tokens fire strongest on that feature) and a **prompt-centric view** (where we look at once particular prompt and see which features fire strongest on that prompt according to a variety of different metrics).
 
 Install with `pip install sae-vis`. Link to PyPI page [here](https://pypi.org/project/sae-vis/).
 
-# Features & Links
+See [here](https://colab.research.google.com/drive/1SuoFIjLvzOAuSg1nkqNbtkwXr8EvQ7SY?usp=drive_link) for a demo Colab notebook (all the code to produce it is also in this repo, in the file `sae_vis/demos/demo.py`, as well as the files containing the created visualizations).
 
-**Important note** - this repo was significantly restructured in March 2024 (we'll remove this message at the end of April). The recent changes include:
-
-- The ability to view multiple features on the same page (rather than just one feature at a time)
-- D3-backed visualisations (which can do things like add lines to histograms as you hover over tokens)
-- More freedom to customize exactly what the visualisation looks like (we provide full cutomizability, rather than just being able to change certain parameters)
-
-[Here](https://drive.google.com/drive/folders/1sAF3Yv6NjVSjo4wu2Tmu8kMh8it6vhIb?usp=sharing) is a link to a Google Drive folder containing 3 files:
-
-- [**User Guide**](https://docs.google.com/document/d/1QGjDB3iFJ5Y0GGpTwibUVsvpnzctRSHRLI-0rm6wt_k/edit?usp=drive_link), which covers the basics of how to use the repo (the core essentials haven't changed much from the previous version, but there are significantly more features)
-- [**Dev Guide**](https://docs.google.com/document/d/10ctbiIskkkDc5eztqgADlvTufs7uzx5Wj8FE_y5petk/edit?usp=sharing), which we recommend for anyone who wants to understand how the repo works (and make edits to it)
-- [**Demo**](https://colab.research.google.com/drive/1oqDS35zibmL1IUQrk_OSTxdhcGrSS6yO?usp=drive_link), which is a Colab notebook that gives a few examples
-
-In the demo Colab, we show the two different types of vis which are supported by this library:
+The library supports two types of visualizations:
 
 1. **Feature-centric vis**, where you look at a single feature and see e.g. which sequences in a large dataset this feature fires strongest on.
 
-<!-- <img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-snip-1B.png" width="800"> -->
 <img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/feature-vis-video.gif" width="800">
 
 2. **Prompt-centric vis**, where you input a custom prompt and see which features score highest on that prompt, according to a variety of possible metrics.
 
-<!-- <img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/sae-snip-2.png" width="800"> -->
 <img src="https://raw.githubusercontent.com/callummcdougall/computational-thread-art/master/example_images/misc/prompt-vis-video.gif" width="800">
 
 # Citing this work
@@ -70,3 +52,7 @@ This project uses [Ruff](https://docs.astral.sh/ruff/) for formatting and lintin
 - `0.2.19` - formatting, error-checking
 - `0.2.20` - fix bugs, remove use of `batch_size` in config
 - `0.2.21` - formatting
+- `0.3.0` - major refactor which makes several improvements, removing complexity and adding new features:
+    - OthelloGPT SAEs with linear probes (input / output space)
+    - Attention output SAEs with max DFA visualized
+    - Tokens labelled with their `(batch, seq)` indices as well as the change in correct-token probability on feature ablation, when hovered over

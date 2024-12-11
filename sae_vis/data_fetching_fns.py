@@ -1,47 +1,47 @@
+import itertools
 import math
 import time
 from collections import defaultdict
+from typing import Literal
 
 import einops
 import numpy as np
 import torch
-import torch.nn.functional as F
 from eindex import eindex
 from jaxtyping import Float, Int
 from rich import print as rprint
 from rich.table import Table
+from sae_lens import SAE, HookedSAETransformer
 from torch import Tensor
 from tqdm.auto import tqdm
-from transformer_lens import HookedTransformer, utils
+from transformer_lens import ActivationCache, HookedTransformer, utils
 
 from sae_vis.data_config_classes import (
     SaeVisConfig,
     SaeVisLayoutConfig,
-    SequencesConfig,
+    SeqMultiGroupConfig,
 )
-
-# RollingStats,
 from sae_vis.data_storing_fns import (
     ActsHistogramData,
-    FeatureData,
     FeatureTablesData,
     LogitsHistogramData,
     LogitsTableData,
+    ProbeLogitsTableData,
     SaeVisData,
+    SeqGroupData,
+    SeqMultiGroupData,
     SequenceData,
-    SequenceGroupData,
-    SequenceMultiGroupData,
 )
-from sae_vis.model_fns import (
-    AutoEncoder,
-    TransformerLensWrapper,
-    to_resid_dir,
-)
+from sae_vis.model_fns import resid_final_pre_layernorm_to_logits, to_resid_dir
 from sae_vis.utils_fns import (
+    METRIC_TITLES,
     FeatureStatistics,
     RollingCorrCoef,
     TopK,
+    VocabType,
+    cross_entropy_loss,
     get_device,
+    index_with_buffer,
     k_largest_indices,
     random_range_indices,
 )
@@ -51,144 +51,29 @@ Arr = np.ndarray
 device = get_device()
 
 
-def compute_feat_acts(
-    model_acts: Float[Tensor, "batch seq d_in"],
-    feature_idx: list[int],
-    encoder: AutoEncoder,
-    encoder_B: AutoEncoder | None = None,
-    corrcoef_neurons: RollingCorrCoef | None = None,
-    corrcoef_encoder: RollingCorrCoef | None = None,
-    corrcoef_encoder_B: RollingCorrCoef | None = None,
-) -> Float[Tensor, "batch seq feats"]:
-    """
-    This function computes the feature activations, given a bunch of model data. It also updates the rolling correlation
-    coefficient objects, if they're given.
-
-    Args:
-        model_acts: Float[Tensor, "batch seq d_in"]
-            The activations of the model, which the SAE was trained on.
-        feature_idx: list[int]
-            The features we're computing the activations for. This will be used to index the encoder's weights.
-        encoder: AutoEncoder
-            The encoder object, which we use to calculate the feature activations.
-        encoder_B: Optional[AutoEncoder]
-            The encoder-B object, which we use to calculate the feature activations.
-        corrcoef_neurons: Optional[RollingCorrCoef]
-            The object storing the minimal data necessary to compute corrcoef between feature activations & neurons.
-        corrcoef_encoder: Optional[RollingCorrCoef]
-            The object storing the minimal data necessary to compute corrcoef between pairwise feature activations.
-        corrcoef_encoder_B: Optional[RollingCorrCoef]
-            The object storing minimal data to compute corrcoef between feature activations & encoder-B features.
-    """
-    # Get the feature act direction by indexing encoder.W_enc, and the bias by indexing encoder.b_enc
-    feature_act_dir = encoder.W_enc[:, feature_idx]  # (d_in, feats)
-    feature_bias = encoder.b_enc[feature_idx]  # (feats,)
-
-    # Calculate & store feature activations (we need to store them so we can get the sequence & histogram vis later)
-    x_cent = model_acts - encoder.b_dec * encoder.cfg.apply_b_dec_to_input
-    feat_acts_pre = einops.einsum(
-        x_cent, feature_act_dir, "batch seq d_in, d_in feats -> batch seq feats"
-    )
-    feat_acts = F.relu(feat_acts_pre + feature_bias)
-
-    # Update the CorrCoef object between feature activation & neurons
-    if corrcoef_neurons is not None:
-        corrcoef_neurons.update(
-            einops.rearrange(feat_acts, "batch seq feats -> feats (batch seq)"),
-            einops.rearrange(model_acts, "batch seq d_in -> d_in (batch seq)"),
-        )
-
-    # Update the CorrCoef object between pairwise feature activations
-    if corrcoef_encoder is not None:
-        corrcoef_encoder.update(
-            einops.rearrange(feat_acts, "batch seq feats -> feats (batch seq)"),
-            einops.rearrange(feat_acts, "batch seq feats -> feats (batch seq)"),
-        )
-
-    # Calculate encoder-B feature acts (we don't need to store encoder-B acts; it's just for left-hand feature tables)
-    if corrcoef_encoder_B is not None:
-        assert (
-            encoder_B is not None
-        ), "Error: you need to supply an encoder-B object if you want to calculate encoder-B feature activations."
-        x_cent_B = model_acts - encoder_B.b_dec * encoder_B.cfg.apply_b_dec_to_input
-        feat_acts_pre_B = einops.einsum(
-            x_cent_B,
-            encoder_B.W_enc,
-            "batch seq d_in, d_in d_hidden -> batch seq d_hidden",
-        )
-        feat_acts_B = F.relu(feat_acts_pre_B + encoder_B.b_enc)
-
-        # Update the CorrCoef object between feature activation & encoder-B features
-        corrcoef_encoder_B.update(
-            einops.rearrange(feat_acts, "batch seq feats -> feats (batch seq)"),
-            einops.rearrange(feat_acts_B, "batch seq d_hidden -> d_hidden (batch seq)"),
-        )
-
-    return feat_acts
-
-
 @torch.inference_mode()
 def parse_feature_data(
+    model: HookedSAETransformer,
+    cfg: SaeVisConfig,
+    sae: SAE,
+    sae_B: SAE | None,
     tokens: Int[Tensor, "batch seq"],
     feature_indices: int | list[int],
-    all_feat_acts: Float[Tensor, "... feats"],
     feature_resid_dir: Float[Tensor, "feats d_model"],
-    all_resid_post: Float[Tensor, "... d_model"],
-    W_U: Float[Tensor, "d_model d_vocab"],
-    cfg: SaeVisConfig,
+    feature_resid_dir_input: Float[Tensor, "feats d"],
+    cache: ActivationCache,
     feature_out_dir: Float[Tensor, "feats d_out"] | None = None,
     corrcoef_neurons: RollingCorrCoef | None = None,
-    corrcoef_encoder: RollingCorrCoef | None = None,
-    corrcoef_encoder_B: RollingCorrCoef | None = None,
+    corrcoef_sae: RollingCorrCoef | None = None,
+    corrcoef_sae_B: RollingCorrCoef | None = None,
+    linear_probes: list[
+        tuple[Literal["input", "output"], str, Float[Tensor, "d_model d_vocab_out"]]
+    ] = [],
+    target_logits: Float[Tensor, "batch seq d_vocab_out"] | None = None,
+    vocab_dict: dict[VocabType, dict[int, str]] | None = None,
     progress: list[tqdm] | None = None,
 ) -> tuple[SaeVisData, dict[str, float]]:
     """Convert generic activation data into a SaeVisData object, which can be used to create the feature-centric vis.
-
-    This function exists so that feature dashboards can be generated without using our AutoEncoder or
-    TransformerLens(Wrapper) classes. We pass through W_U & other data needed for computing the logit lens, so we don't
-    need the models.
-
-    Args:
-        tokens: Int[Tensor, "batch seq"]
-            The tokens we'll be using to get the feature activations.
-
-        feature_indices: Union[int, list[int]]
-            The features we're actually computing. These might just be a subset of the model's full features.
-
-        all_feat_acts: Float[Tensor, "... feats"]
-            The activations values of the features across the batch & sequence.
-
-        feature_resid_dir: Float[Tensor, "feats d_model"]
-            The directions that each feature writes to the residual stream.
-            For example, feature_resid_dir = encoder.W_dec[feature_indices] # [feats d_autoencoder]
-
-        all_resid_post: Float[Tensor, "... d_model"]
-            The activations of the final layer of the model before the unembed.
-
-        W_U: Float[Tensor, "d_model d_vocab"]
-            The model's unembed weights for the logit lens.
-
-        cfg: SaeVisConfig
-            Feature visualization parameters, containing a bunch of other stuff. See the SaeVisConfig docstring for
-            more information.
-
-        feature_out_dir: Optional[Float[Tensor, "feats d_out"]]
-            The directions that each SAE feature writes to the residual stream. This will be the same as
-            feature_resid_dir if the SAE is in the residual stream (as we will assume if it not provided)
-            For example, feature_out_dir = encoder.W_dec[feature_indices] # [feats d_autoencoder]
-
-        corrcoef_neurons: Optional[RollingCorrCoef]
-            The object storing the minimal data necessary to compute corrcoef between feature activations & neurons.
-
-        corrcoef_encoder: Optional[RollingCorrCoef]
-            The object storing the minimal data necessary to compute corrcoef between feature activations (pairwise).
-
-        corrcoef_encoder_B: Optional[RollingCorrCoef]
-            The object storing minimal data to compute corrcoef between feature activations & encoder-B features.
-
-        progress: Optional[list[tqdm]]
-            An optional list containing progress bars for the forward passes and the sequence data. This is used to
-            update the progress bars as the computation runs.
 
     Returns:
         sae_vis_data: SaeVisData
@@ -197,15 +82,26 @@ def parse_feature_data(
 
         time_logs: dict[str, float]
             A dictionary containing the time taken for each step of the computation. This is optionally printed at the
-            end of the `get_feature_data` function, if `cfg.verbose` is set to True.
+            end of the `get_feature_data` function, if `verbose` is set to True.
+
+    # TODO - there's redundant docstrings here, each argument should only have a docstring in one function (the outer-most one)
+
+    # TODO - this function was originally written so that there could be a fn that didn't use the saes and the models. But I don't know if that's really necessary any more, and maybe there's more funcs than we need?
     """
+    acts_post_hook_name = f"{sae.cfg.hook_name}.hook_sae_acts_post"
+    all_feat_acts = cache[acts_post_hook_name]
+
     time_logs = {
-        "(4) Getting data for tables": 0.0,
-        "(5) Getting data for histograms": 0.0,
-        "(6) Getting data for sequences": 0.0,
-        "(7) Getting data for quantiles": 0.0,
+        "(2) Getting data for sequences": 0.0,
+        "(3) Getting data for non-sequence components": 0.0,
     }
-    t0 = time.time()
+    t0 = time.monotonic()
+
+    if target_logits is not None:
+        assert (
+            target_logits.shape[-1] < 1000
+        ), "Not recommended to use target logits with a very large vocab size (this is intended for toy models e.g. OthelloGPT)"
+        target_logits = target_logits.to(device)
 
     # Make feature_indices a list, for convenience
     if isinstance(feature_indices, int):
@@ -221,9 +117,7 @@ def parse_feature_data(
         ), f"Num features in feature_out_dir ({feature_resid_dir.shape[0]}) doesn't match {len(feature_indices)=}"
 
     # ! Data setup code (defining the main objects we'll eventually return)
-    feature_data_dict: dict[int, FeatureData] = {
-        feat: FeatureData() for feat in feature_indices
-    }
+    feature_data_dict = {feat: {} for feat in feature_indices}
 
     # We're using `cfg.feature_centric_layout` to figure out what data we'll need to calculate during this function
     layout = cfg.feature_centric_layout
@@ -231,7 +125,7 @@ def parse_feature_data(
         layout, SaeVisLayoutConfig
     ), f"Error: cfg.feature_centric_layout must be a SaeVisLayoutConfig object, got {type(layout)}"
 
-    # ! Calculate all data for the left-hand column visualisations, i.e. the 3 tables
+    # ! Feature tables (i.e. left hand of vis)
 
     if layout.feature_tables_cfg is not None and feature_out_dir is not None:
         # Store kwargs (makes it easier to turn the tables on and off individually)
@@ -265,9 +159,9 @@ def parse_feature_data(
                 correlated_neurons_cossim=neuron_cossim,
             )
 
-        # Table 3: primary encoder features correlated with this feature, based on their activations
-        if isinstance(corrcoef_encoder, RollingCorrCoef):
-            enc_indices, enc_pearson, enc_cossim = corrcoef_encoder.topk_pearson(
+        # Table 3: primary sae features correlated with this feature, based on their activations
+        if isinstance(corrcoef_sae, RollingCorrCoef):
+            enc_indices, enc_pearson, enc_cossim = corrcoef_sae.topk_pearson(
                 k=layout.feature_tables_cfg.n_rows,
             )
             feature_tables_data.update(
@@ -276,9 +170,9 @@ def parse_feature_data(
                 correlated_features_cossim=enc_cossim,
             )
 
-        # Table 4: encoder-B features correlated with this feature, based on their activations
-        if isinstance(corrcoef_encoder_B, RollingCorrCoef):
-            encB_indices, encB_pearson, encB_cossim = corrcoef_encoder_B.topk_pearson(
+        # Table 4: sae-B features correlated with this feature, based on their activations
+        if isinstance(corrcoef_sae_B, RollingCorrCoef):
+            encB_indices, encB_pearson, encB_cossim = corrcoef_sae_B.topk_pearson(
                 k=layout.feature_tables_cfg.n_rows,
             )
             feature_tables_data.update(
@@ -289,33 +183,43 @@ def parse_feature_data(
 
         # Add all this data to the list of FeatureTablesData objects
         for i, feat in enumerate(feature_indices):
-            feature_data_dict[feat].feature_tables_data = FeatureTablesData(
+            feature_data_dict[feat]["featureTables"] = FeatureTablesData(
                 **{k: v[i] for k, v in feature_tables_data.items()}
             )
 
-    time_logs["(4) Getting data for tables"] = time.time() - t0
-    t0 = time.time()
-
-    # ! Get all data for the middle column visualisations, i.e. the two histograms & the logit table
+    # ! Histograms & logit tables & optional othello probes (i.e. middle column of vis)
 
     # Get the logits of all features (i.e. the directions this feature writes to the logit output)
     logits = einops.einsum(
-        feature_resid_dir, W_U, "feats d_model, d_model d_vocab -> feats d_vocab"
+        feature_resid_dir, model.W_U, "feats d_model, d_model d_vocab -> feats d_vocab"
     )
+    probe_names_and_values = [
+        (
+            f"PROBE {name!r}, {mode.upper()} SPACE",
+            einops.einsum(
+                feature_resid_dir if mode == "output" else feature_resid_dir_input,
+                probe,
+                "feats d_model, d_model d_vocab_out -> feats d_vocab_out",
+            ),
+        )
+        for mode, name, probe in linear_probes
+    ]
+
     if any(
         x is not None
         for x in [layout.act_hist_cfg, layout.logits_hist_cfg, layout.logits_table_cfg]
     ):
-        for i, (feat, logit_vector) in enumerate(zip(feature_indices, logits)):
+        for i, feat in enumerate(feature_indices):
             # Get logits histogram data (no title)
             if layout.logits_hist_cfg is not None:
-                feature_data_dict[
-                    feat
-                ].logits_histogram_data = LogitsHistogramData.from_data(
-                    data=logit_vector,
-                    n_bins=layout.logits_hist_cfg.n_bins,
-                    tickmode="5 ticks",
-                    title=None,
+                # TODO - create more things like this, with `from_data` methods for the data-holding classes
+                feature_data_dict[feat]["logitsHistogram"] = (
+                    LogitsHistogramData.from_data(
+                        data=logits[i],
+                        n_bins=layout.logits_hist_cfg.n_bins,
+                        tickmode="5 ticks",
+                        title=None,
+                    )
                 )
 
             # Get data for feature activations histogram (including the title!)
@@ -323,86 +227,90 @@ def parse_feature_data(
                 feat_acts = all_feat_acts[..., i]
                 nonzero_feat_acts = feat_acts[feat_acts > 0]
                 frac_nonzero = nonzero_feat_acts.numel() / feat_acts.numel()
-                feature_data_dict[
-                    feat
-                ].acts_histogram_data = ActsHistogramData.from_data(
+                feature_data_dict[feat]["actsHistogram"] = ActsHistogramData.from_data(
                     data=nonzero_feat_acts,
                     n_bins=layout.act_hist_cfg.n_bins,
                     tickmode="5 ticks",
-                    title=f"ACTIVATIONS<br>DENSITY = {frac_nonzero:.3%}",
+                    title=f"ACTIVATIONS<br><span style='color:#666;font-weight:normal'>DENSITY = {frac_nonzero:.3%}</span>",
                 )
 
+            # Get logits table data
             if layout.logits_table_cfg is not None:
-                # Get logits table data
-                top_logits = TopK(
-                    logit_vector, k=layout.logits_table_cfg.n_rows, largest=True
-                )
-                bottom_logits = TopK(
-                    logit_vector, k=layout.logits_table_cfg.n_rows, largest=False
+                feature_data_dict[feat]["logitsTable"] = LogitsTableData.from_data(
+                    logits[i], k=layout.logits_table_cfg.n_rows
                 )
 
-                top_logits, top_token_ids = (
-                    top_logits.values.tolist(),
-                    top_logits.indices.tolist(),
-                )
-                bottom_logits, bottom_token_ids = (
-                    bottom_logits.values.tolist(),
-                    bottom_logits.indices.tolist(),
-                )
-
-                # Create a MiddlePlotsData object from this, and add it to the dict
-                feature_data_dict[feat].logits_table_data = LogitsTableData(
-                    bottom_logits=bottom_logits,
-                    bottom_token_ids=bottom_token_ids,
-                    top_logits=top_logits,
-                    top_token_ids=top_token_ids,
+            # Optionally get probes data
+            if layout.probe_logits_table_cfg is not None:
+                feature_data_dict[feat]["probeLogitsTables"] = (
+                    ProbeLogitsTableData.from_data(
+                        probe_names_and_values=[
+                            (name, logits[i]) for name, logits in probe_names_and_values
+                        ],
+                        k=layout.probe_logits_table_cfg.n_rows,
+                    )
                 )
 
-    time_logs["(5) Getting data for histograms"] = time.time() - t0
-    t0 = time.time()
+    # ! Get stats (including quantiles, which will be useful for the prompt-centric visualisation)
+    feature_stats = FeatureStatistics.create(
+        data=einops.rearrange(all_feat_acts, "b s feats -> feats (b s)")
+    )
 
-    # ! Calculate all data for the right-hand visualisations, i.e. the sequences
+    time_logs["(3) Getting data for non-sequence components"] = time.monotonic() - t0
+    t0 = time.monotonic()
+
+    # ! Sequences (i.e. right hand of vis)
 
     if layout.seq_cfg is not None:
         for i, feat in enumerate(feature_indices):
             # Add this feature's sequence data to the list
-            feature_data_dict[feat].sequence_data = get_sequences_data(
+            feature_data_dict[feat]["seqMultiGroup"] = get_sequences_data(
                 tokens=tokens,
-                feat_acts=all_feat_acts[..., i],
+                feat_idx=i,
                 feat_logits=logits[i],
-                resid_post=all_resid_post,
+                cache=cache,
                 feature_resid_dir=feature_resid_dir[i],
-                W_U=W_U,
+                model=model,
+                sae=sae,
+                target_logits=target_logits,
                 seq_cfg=layout.seq_cfg,
             )
             # Update the 2nd progress bar (fwd passes & getting sequence data dominates the runtime of these computations)
             if progress is not None:
                 progress[1].update(1)
 
-    time_logs["(6) Getting data for sequences"] = time.time() - t0
-    t0 = time.time()
-
-    # ! Get stats (including quantiles, which will be useful for the prompt-centric visualisation)
-    feature_stats = FeatureStatistics.create(
-        data=einops.rearrange(all_feat_acts, "b s feats -> feats (b s)")
-    )
-    time_logs["(7) Getting data for quantiles"] = time.time() - t0
-    t0 = time.time()
+    time_logs["(2) Getting data for sequences"] = time.monotonic() - t0
+    t0 = time.monotonic()
 
     # ! Return the output, as a dict of FeatureData items
-    sae_vis_data = SaeVisData(feature_data_dict, feature_stats, cfg)
+    sae_vis_data = SaeVisData(
+        feature_data_dict=feature_data_dict,
+        prompt_data_dict={},
+        feature_stats=feature_stats,
+        cfg=cfg,
+        model=model,
+        sae=sae,
+        sae_B=sae_B,
+        vocab_dict=vocab_dict,
+    )
     return sae_vis_data, time_logs
 
 
 @torch.inference_mode()
 def _get_feature_data(
-    encoder: AutoEncoder,
-    encoder_B: AutoEncoder | None,
-    model: TransformerLensWrapper,
+    sae: SAE,
+    model: HookedSAETransformer,
     tokens: Int[Tensor, "batch seq"],
     feature_indices: int | list[int],
     cfg: SaeVisConfig,
+    sae_B: SAE | None,
+    linear_probes: list[
+        tuple[Literal["input", "output"], str, Float[Tensor, "d_model d_vocab_out"]]
+    ] = [],
+    target_logits: Float[Tensor, "batch seq d_vocab_out"] | None = None,
+    vocab_dict: dict[VocabType, dict[int, str]] | None = None,
     progress: list[tqdm] | None = None,
+    clear_memory_between_batches: bool = False,
 ) -> tuple[SaeVisData, dict[str, float]]:
     """
     Gets data that will be used to create the sequences in the feature-centric HTML visualisation.
@@ -411,123 +319,165 @@ def _get_feature_data(
     which does exactly the same thing except it also batches this computation by features (in accordance with the
     arguments `features` and `minibatch_size_features` from the SaeVisConfig object).
 
-    Args:
-        encoder: AutoEncoder
-            The encoder whose features we'll be analyzing.
-
-        encoder_B: AutoEncoder
-            The encoder we'll be using as a reference (i.e. finding the B-features with the highest correlation). This
-            is only necessary if we're generating the left-hand tables (i.e. cfg.include_left_tables=True).
-
-        model: TransformerLensWrapper
-            The model we'll be using to get the feature activations. It's a wrapping of the base TransformerLens model.
-
-        tokens: Int[Tensor, "batch seq"]
-            The tokens we'll be using to get the feature activations.
-
-        feature_indices: Union[int, list[int]]
-            The features we're actually computing. These might just be a subset of the model's full features.
-
-        cfg: SaeVisConfig
-            Feature visualization parameters, containing a bunch of other stuff. See the SaeVisConfig docstring for
-            more information.
-
-        progress: Optional[list[tqdm]]
-            An optional list containing progress bars for the forward passes and the sequence data. This is used to
-            update the progress bars as the computation runs.
-
     Returns:
         sae_vis_data: SaeVisData
-            Containing data for creating each feature visualization, as well as data for rank-ordering the feature
-            visualizations when it comes time to make the prompt-centric view (the `feature_act_quantiles` attribute).
+            Containing data for creating each feature visualization, as well as data for
+            rank-ordering the feature visualizations when it comes time to make the prompt-centric
+            view (the `feature_act_quantiles` attribute).
 
         time_log: dict[str, float]
-            A dictionary containing the time taken for each step of the computation. This is optionally printed at the
-            end of the `get_feature_data` function, if `cfg.verbose` is set to True.
+            A dictionary containing the time taken for each step of the computation. This is
+            optionally printed at the end of the `get_feature_data` function, if `verbose=True`.
     """
     # ! Boring setup code
-    time_logs = {
-        "(1) Initialization": 0.0,
-        "(2) Forward passes to gather model activations": 0.0,
-        "(3) Computing feature acts from model acts": 0.0,
-    }
-
-    t0 = time.time()
+    time_logs = defaultdict(float)
+    batch_size, seq_len = tokens.shape
 
     # Make feature_indices a list, for convenience
     if isinstance(feature_indices, int):
         feature_indices = [feature_indices]
 
-    # Get tokens into minibatches, for the fwd pass
-    token_minibatches = (
+    # Get tokens into minibatches, for the fwd pass. Same for target logits, if using them
+    token_minibatches_list = (
         (tokens,)
         if cfg.minibatch_size_tokens is None
         else tokens.split(cfg.minibatch_size_tokens)
     )
-    token_minibatches = [tok.to(device) for tok in token_minibatches]
+    token_minibatches = [tok.to(device) for tok in token_minibatches_list]
 
     # ! Data setup code (defining the main objects we'll eventually return, for each of 5 possible vis components)
 
-    # Create lists to store the feature activations & final values of the residual stream
-    all_resid_post = []
-    all_feat_acts = []
+    # Create tensors to store the feature activations & final values of the residual stream
+    seqpos_slice = slice(*cfg.seqpos_slice)
+    resid_final_hook_name = utils.get_act_name("resid_post", model.cfg.n_layers - 1)
+    acts_post_hook_name = f"{sae.cfg.hook_name}.hook_sae_acts_post"
+    sae_input_hook_name = f"{sae.cfg.hook_name}.hook_sae_input"
+    v_hook_name = utils.get_act_name("v", sae.cfg.hook_layer)
+    pattern_hook_name = utils.get_act_name("pattern", sae.cfg.hook_layer)
+    cache_dict = {
+        resid_final_hook_name: torch.zeros(batch_size, seq_len, model.cfg.d_model),
+        acts_post_hook_name: torch.zeros(batch_size, seq_len, len(feature_indices)),
+        # sae_input_hook_name: torch.zeros(batch_size, seq_len, sae.cfg.d_in),
+    }
+    using_dfa = (
+        (cfg.feature_centric_layout.seq_cfg is not None)
+        and (cfg.feature_centric_layout.seq_cfg.dfa_for_attn_saes)
+        and (sae.cfg.hook_name.endswith("_z"))
+    )
+    if using_dfa:
+        cache_dict[v_hook_name] = torch.zeros(
+            batch_size, seq_len, model.cfg.n_heads, model.cfg.d_head
+        )
+        cache_dict[pattern_hook_name] = torch.zeros(
+            batch_size, model.cfg.n_heads, seq_len, seq_len
+        )
 
     # Create objects to store the data for computing rolling stats
-    corrcoef_neurons = RollingCorrCoef()
-    corrcoef_encoder = RollingCorrCoef(indices=feature_indices, with_self=True)
-    corrcoef_encoder_B = RollingCorrCoef() if encoder_B is not None else None
+    sae_input_is_privileged = any(
+        [sae.cfg.hook_name.endswith(x) for x in ["mlp.hook_pre", "mlp.hook_post"]]
+    )
+    corrcoef_neurons = RollingCorrCoef() if sae_input_is_privileged else None
+    corrcoef_sae = RollingCorrCoef(indices=feature_indices, with_self=True)
+    corrcoef_sae_B = RollingCorrCoef() if sae_B is not None else None
 
-    # Get encoder & decoder directions
-    feature_out_dir = encoder.W_dec[feature_indices]  # [feats d_autoencoder]
-    feature_resid_dir = to_resid_dir(feature_out_dir, model)  # [feats d_model]
-
-    time_logs["(1) Initialization"] = time.time() - t0
+    # Get sae & decoder directions
+    feature_out_dir = sae.W_dec[feature_indices]  # [feats d_sae]
+    feature_resid_dir = to_resid_dir(feature_out_dir, sae, model)  # [feats d_model]
+    feature_in_dir = sae.W_enc.T[feature_indices]  # [feats d_in]
+    feature_resid_dir_input = to_resid_dir(
+        feature_in_dir, sae, model, input=True
+    )  # [feats d_model]
 
     # ! Compute & concatenate together all feature activations & post-activation function values
 
+    start = 0
     for minibatch in token_minibatches:
         # Fwd pass, get model activations
-        t0 = time.time()
-        residual, model_acts = model.forward(minibatch, return_logits=False)
-        time_logs["(2) Forward passes to gather model activations"] += time.time() - t0
+        t0 = time.monotonic()
 
-        # Compute feature activations from this
-        t0 = time.time()
-        feat_acts = compute_feat_acts(
-            model_acts=model_acts,
-            feature_idx=feature_indices,
-            encoder=encoder,
-            encoder_B=encoder_B,
-            corrcoef_neurons=corrcoef_neurons,
-            corrcoef_encoder=corrcoef_encoder,
-            corrcoef_encoder_B=corrcoef_encoder_B,
+        sae.use_error_term = True
+        _, cache = model.run_with_cache_with_saes(
+            minibatch,
+            saes=[sae],
+            stop_at_layer=model.cfg.n_layers,
+            names_filter=list(set(cache_dict.keys()) | {sae_input_hook_name}),
         )
-        time_logs["(3) Computing feature acts from model acts"] += time.time() - t0
+        sae.use_error_term = False
+        feat_acts_all = cache[acts_post_hook_name]  # [batch seq d_sae]
+        feat_acts = cache[acts_post_hook_name][
+            ..., feature_indices
+        ]  # [batch seq d_sae]
+        sae_input = cache[sae_input_hook_name]  # [batch seq d_in]
 
-        # Add these to the lists (we'll eventually concat)
-        all_feat_acts.append(feat_acts)
-        all_resid_post.append(residual)
+        time_logs["(1) Forward passes to gather model activations"] += (
+            time.monotonic() - t0
+        )
+
+        if clear_memory_between_batches:
+            t0 = time.monotonic()
+            torch.cuda.empty_cache()
+            time_logs["(1.5) Clearing memory"] = (
+                time_logs.get("(1.5) Clearing memory", 0.0) + time.monotonic() - t0
+            )
+
+        # Update the CorrCoef object between feature activation & neurons
+        if corrcoef_neurons is not None:
+            corrcoef_neurons.update(feat_acts, sae_input)
+
+        # Update the CorrCoef object between pairwise feature activations
+        if corrcoef_sae is not None:
+            corrcoef_sae.update(feat_acts, feat_acts_all)
+
+        # Update the CorrCoef object between feature activation & sae-B features
+        if corrcoef_sae_B is not None:
+            assert sae_B is not None
+            feat_acts_B = sae_B.encode(sae_input)  # [batch seq d_sae]
+            corrcoef_sae_B.update(feat_acts, feat_acts_B)
+
+        # Put these values into the tensors
+        batch_slice = slice(start, start + len(minibatch))
+        cache_dict[resid_final_hook_name][batch_slice, seqpos_slice] = cache[
+            resid_final_hook_name
+        ][:, seqpos_slice].cpu()
+        cache_dict[acts_post_hook_name][batch_slice, seqpos_slice] = feat_acts[
+            :, seqpos_slice
+        ].cpu()
+        if using_dfa:
+            cache_dict[v_hook_name][batch_slice, seqpos_slice] = cache[v_hook_name][
+                :, seqpos_slice
+            ].cpu()
+            cache_dict[pattern_hook_name][
+                batch_slice, :, seqpos_slice, seqpos_slice
+            ] = cache[pattern_hook_name][:, seqpos_slice, seqpos_slice].cpu()
 
         # Update the 1st progress bar (fwd passes & getting sequence data dominates the runtime of these computations)
         if progress is not None:
             progress[0].update(1)
 
-    all_feat_acts = torch.cat(all_feat_acts, dim=0)
-    all_resid_post = torch.cat(all_resid_post, dim=0)
+        start += len(minibatch)
+
+    torch.cuda.empty_cache()
+
+    cache = ActivationCache(cache_dict, model=model)
 
     # ! Use the data we've collected to make a MultiFeatureData object
     sae_vis_data, _time_logs = parse_feature_data(
+        model=model,
+        cfg=cfg,
+        sae=sae,
+        sae_B=sae_B,
         tokens=tokens,
         feature_indices=feature_indices,
-        all_feat_acts=all_feat_acts,
         feature_resid_dir=feature_resid_dir,
-        all_resid_post=all_resid_post,
-        W_U=model.W_U,
-        cfg=cfg,
+        feature_resid_dir_input=feature_resid_dir_input,
+        cache=cache,
         feature_out_dir=feature_out_dir,
         corrcoef_neurons=corrcoef_neurons,
-        corrcoef_encoder=corrcoef_encoder,
-        corrcoef_encoder_B=corrcoef_encoder_B,
+        corrcoef_sae=corrcoef_sae,
+        corrcoef_sae_B=corrcoef_sae_B,
+        linear_probes=linear_probes,
+        target_logits=target_logits,
+        vocab_dict=vocab_dict,
         progress=progress,
     )
 
@@ -542,35 +492,51 @@ def _get_feature_data(
 
 @torch.inference_mode()
 def get_feature_data(
-    encoder: AutoEncoder,
-    model: HookedTransformer,
+    sae: SAE,
+    model: HookedSAETransformer,
     tokens: Int[Tensor, "batch seq"],
     cfg: SaeVisConfig,
-    encoder_B: AutoEncoder | None = None,
+    sae_B: SAE | None = None,
+    linear_probes: list[
+        tuple[Literal["input", "output"], str, Float[Tensor, "d_model d_vocab_out"]]
+    ] = [],
+    target_logits: Float[Tensor, "batch seq d_vocab_out"] | None = None,
+    vocab_dict: dict[VocabType, dict[int, str]] | None = None,
+    verbose: bool = False,
+    clear_memory_between_batches: bool = False,
 ) -> SaeVisData:
     """
-    This is the main function which users will run to generate the feature visualization data. It batches this
-    computation over features, in accordance with the arguments in the SaeVisConfig object (we don't want to compute all
-    the features at once, since might give OOMs).
+    This is the main function which users will run to generate the feature visualization data. It
+    batches this computation over features, in accordance with the arguments in the SaeVisConfig
+    object (we don't want to compute all the features at once, since might give OOMs).
 
-    See the `_get_feature_data` function for an explanation of the arguments, as well as a more detailed explanation
-    of what this function is doing.
+    See the `_get_feature_data` function for an explanation of the arguments, as well as a more
+    detailed explanation of what this function is doing.
 
     The return object is the merged SaeVisData objects returned by the `_get_feature_data` function.
     """
+    T0 = time.monotonic()
+
     # Apply random seed
     if cfg.seed is not None:
         torch.manual_seed(cfg.seed)
         np.random.seed(cfg.seed)
 
     # Create objects to store all the data we'll get from `_get_feature_data`
-    sae_vis_data = SaeVisData()
+    sae_vis_data = SaeVisData(
+        model=model,
+        cfg=cfg,
+        sae=sae,
+        sae_B=sae_B,
+        linear_probes=linear_probes,
+        vocab_dict=vocab_dict,
+    )
     time_logs = defaultdict(float)
 
     # Get a feature list (need to deal with the case where `cfg.features` is an int, or None)
     if cfg.features is None:
-        assert isinstance(encoder.cfg.d_hidden, int)
-        features_list = list(range(encoder.cfg.d_hidden))
+        assert isinstance(sae.cfg.d_sae, int)
+        features_list = list(range(sae.cfg.d_sae))
     elif isinstance(cfg.features, int):
         features_list = [cfg.features]
     else:
@@ -591,7 +557,7 @@ def get_feature_data(
     totals = (n_token_batches * len(feature_batches), len(features_list))
 
     # Optionally add two progress bars (one for the forward passes, one for getting the sequence data)
-    if cfg.verbose:
+    if verbose:
         progress = [
             tqdm(total=totals[0], desc="Forward passes to cache data for vis"),
             tqdm(total=totals[1], desc="Extracting vis data from cached data"),
@@ -599,19 +565,20 @@ def get_feature_data(
     else:
         progress = None
 
-    # If the model is from TransformerLens, we need to apply a wrapper to it for standardization
-    assert isinstance(
-        model, HookedTransformer
-    ), "Error: non-HookedTransformer models are not yet supported."
-    assert isinstance(
-        cfg.hook_point, str
-    ), f"Error: cfg.hook_point must be a string, got {cfg.hook_point}"
-    model_wrapper = TransformerLensWrapper(model, cfg.hook_point)
-
     # For each batch of features: get new data and update global data storage objects
     for features in feature_batches:
         new_feature_data, new_time_logs = _get_feature_data(
-            encoder, encoder_B, model_wrapper, tokens, features, cfg, progress
+            sae=sae,
+            model=model,
+            tokens=tokens,
+            feature_indices=features,
+            cfg=cfg,
+            sae_B=sae_B,
+            linear_probes=linear_probes,
+            target_logits=target_logits,
+            vocab_dict=vocab_dict,
+            progress=progress,
+            clear_memory_between_batches=clear_memory_between_batches,
         )
         sae_vis_data.update(new_feature_data)
         for key, value in new_time_logs.items():
@@ -623,7 +590,10 @@ def get_feature_data(
             pbar.n = pbar.total
 
     # If verbose, then print the output
-    if cfg.verbose:
+    if verbose:
+        time_logs["(?) Unaccounted time"] = (
+            time.monotonic() - T0 - sum(time_logs.values())
+        )
         total_time = sum(time_logs.values())
         table = Table("Task", "Time", "Pct %")
         for task, duration in time_logs.items():
@@ -636,24 +606,26 @@ def get_feature_data(
 @torch.inference_mode()
 def get_sequences_data(
     tokens: Int[Tensor, "batch seq"],
-    feat_acts: Float[Tensor, "batch seq"],
+    feat_idx: int,  # the index in the batch, not the same as the feature id in the overall SAE
     feat_logits: Float[Tensor, "d_vocab"],
-    resid_post: Float[Tensor, "batch seq d_model"],
+    cache: ActivationCache,
     feature_resid_dir: Float[Tensor, "d_model"],
-    W_U: Float[Tensor, "d_model d_vocab"],
-    seq_cfg: SequencesConfig,
-) -> SequenceMultiGroupData:
+    model: HookedSAETransformer,
+    sae: SAE,
+    target_logits: Float[Tensor, "batch seq d_vocab_out"] | None,
+    seq_cfg: SeqMultiGroupConfig,
+) -> SeqMultiGroupData:
     """
-    This function returns the data which is used to create the sequence visualizations (i.e. the right-hand column of
-    the visualization). This is a multi-step process (the 4 steps are annotated in the code):
+    This function returns the data which is used to create the top activating sequence visualizations. Steps are:
 
-        (1) Find all the token groups (i.e. topk, bottomk, and quantile groups of activations). These are bold tokens.
-        (2) Get the indices of all tokens we'll need data from, which includes a buffer around each bold token.
-        (3) Extract the token IDs, feature activations & residual stream values for those positions
-        (4) Compute the logit effect if this feature is ablated
-            (4A) Use this to compute the most affected tokens by this feature (i.e. the vis hoverdata)
-            (4B) Use this to compute the loss effect if this feature is ablated (i.e. the blue/red underlining)
-        (5) Return all this data as a SequenceMultiGroupData object
+        (1) Get the indices of all example tokens we'll be taking (i.e. the bold tokens in the vis). This includes the
+            top activations and all the quantiles.
+        (2) Get the token IDs from all these indices.
+        (3) Get other values at these positions & the surrounding buffer: feature acts, residual stream values
+        (4) Compute the logit & logprob effect of this feature. Use this to also get the top affected tokens by this
+            feat (i.e. the vis hoverdata).
+        (5) If necessary, get the direct feature attribution info.
+        (6) Return all this data as a SeqMultiGroupData object.
 
     Args:
         tokens:
@@ -662,201 +634,278 @@ def get_sequences_data(
             The activations of the feature we're interested in, for each token in the batch.
         feat_logits:
             The logit vector for this feature (used to generate histogram, and is needed here for the line-on-hover).
-        resid_post:
+        resid_final:
             The residual stream values before final layernorm, for each token in the batch.
         feature_resid_dir:
-            The direction this feature writes to the logit output (i.e. the direction we'll be erasing from resid_post).
+            The direction this feature writes to the logit output (i.e. the direction we'll be erasing from resid_final).
+        feature_resid_dir_input:
+            The input direction (i.e. we dot this with residual stream to get this feature's activation).
         W_U:
             The model's unembedding matrix, which we'll use to get the logits.
         cfg:
             Feature visualization parameters, containing some important params e.g. num sequences per group.
 
     Returns:
-        SequenceMultiGroupData
-            This is a dataclass which contains a dict of SequenceGroupData objects, where each SequenceGroupData object
+        SeqMultiGroupData
+            This is a dataclass which contains a dict of SeqGroupData objects, where each SeqGroupData object
             contains the data for a particular group of sequences (i.e. the top-k, bottom-k, and the quantile groups).
     """
+    resid_final_hook_name = utils.get_act_name(
+        "resid_post", layer=model.cfg.n_layers - 1
+    )
+    acts_post_hook_name = f"{sae.cfg.hook_name}.hook_sae_acts_post"
+    # sae_acts_pre_hook_name = f"{sae.cfg.hook_name}.hook_sae_acts_pre"
+    v_hook_name = utils.get_act_name("v", layer=sae.cfg.hook_layer)
+    pattern_hook_name = utils.get_act_name("pattern", layer=sae.cfg.hook_layer)
+
+    resid_post = cache[resid_final_hook_name]
+    feat_acts = cache[acts_post_hook_name][..., feat_idx]
 
     # ! (1) Find the tokens from each group
 
-    # Get buffer, s.t. we're looking for bold tokens in the range `buffer[0] : buffer[1]`. For each bold token, we need
-    # to see `seq_cfg.buffer[0]+1` behind it (plus 1 because we need the prev token to compute loss effect), and we need
-    # to see `seq_cfg.buffer[1]` ahead of it.
-    buffer = (
-        (seq_cfg.buffer[0] + 1, -seq_cfg.buffer[1])
-        if seq_cfg.buffer is not None
-        else None
+    # We define our full buffer going 1 token further back than all the visible tokens. This is because suppose we have
+    # visible tokens [0, 1, 2, 3]: we need to compute feature activations from [0, 1, 2, 3] to highlight the tokens, but
+    # we also need to compute residual stream & feature acts from [-1, 0, 1, 2] so we can ablate that feature from the
+    # residual stream & see loss effect on all visible tokens.
+    buffer_to_exclude_from_ex = (
+        (0, -1)
+        if seq_cfg.buffer is None
+        else (seq_cfg.buffer[0] + 1, -seq_cfg.buffer[1])
     )
-    _batch_size, seq_length = tokens.shape
-    padded_buffer_width = (
-        seq_cfg.buffer[0] + seq_cfg.buffer[1] + 2
-        if seq_cfg.buffer is not None
-        else seq_length
-    )
+    feat_acts_max = feat_acts[
+        :, buffer_to_exclude_from_ex[0] : buffer_to_exclude_from_ex[1]
+    ].max()
 
     # Get the top-activating tokens
-    indices = k_largest_indices(feat_acts, k=seq_cfg.top_acts_group_size, buffer=buffer)
-    indices_dict = {f"TOP ACTIVATIONS<br>MAX = {feat_acts.max():.3f}": indices}
+    indices = k_largest_indices(
+        feat_acts,
+        k=seq_cfg.top_acts_group_size,
+        buffer=buffer_to_exclude_from_ex,
+    )
+    use_dfa = seq_cfg.dfa_for_attn_saes and sae.cfg.hook_name.endswith("hook_z")
+    first_title = (
+        "TOP ACTIVATIONS (right) & DFA (left)" if use_dfa else "TOP ACTIVATIONS"
+    )
+    indices_dict = {
+        f"{first_title}<br><span style='color:#666;font-weight:normal'>MAX ACT = {feat_acts_max:.3f}</span>": indices
+    }
 
     # Get all possible indices. Note, we need to be able to look 1 back (feature activation on prev token is needed for
     # computing loss effect on this token)
     if seq_cfg.n_quantiles > 0:
-        quantiles = torch.linspace(0, feat_acts.max().item(), seq_cfg.n_quantiles + 1)
+        quantiles = torch.linspace(0, feat_acts_max.item(), seq_cfg.n_quantiles + 1)
+        quantiles[0] = 1e-6
+        n_active = (feat_acts > 1e-6).float().sum()
         for i in range(seq_cfg.n_quantiles - 1, -1, -1):
             lower, upper = quantiles[i : i + 2].tolist()
-            pct = ((feat_acts >= lower) & (feat_acts <= upper)).float().mean()
+            pct = ((feat_acts >= lower) & (feat_acts <= upper)).float().sum() / n_active
             indices = random_range_indices(
                 feat_acts,
                 k=seq_cfg.quantile_group_size,
                 bounds=(lower, upper),
-                buffer=buffer,
+                buffer=buffer_to_exclude_from_ex,
             )
             indices_dict[
-                f"INTERVAL {lower:.3f} - {upper:.3f}<br>CONTAINS {pct:.3%}"
+                f"INTERVAL {lower:.3f} - {upper:.3f}<br><span style='color:#666;font-weight:normal'>CONTAINS {pct:.3%}</span>"
             ] = indices
 
-    # Concat all the indices together (in the next steps we do all groups at once). Shape of this object is [n_bold 2],
-    # i.e. the [i, :]-th element are the batch and sequence dimensions for the i-th bold token.
-    indices_bold = torch.concat(list(indices_dict.values())).cpu()
-    n_bold = indices_bold.shape[0]
+    # Concat all the indices together (in the next steps we do all groups at once). Shape of this object is [n_ex 2],
+    # i.e. the [i, :]-th element are the batch and sequence dimensions for the i-th example.
+    indices_ex = torch.concat(list(indices_dict.values())).cpu()
+    n_ex = indices_ex.shape[0]
 
-    # ! (2) Get the buffer indices
+    # ! (2) Get our top tokens, and what we're displaying
 
     if seq_cfg.buffer is not None:
-        # Get the buffer indices, by adding a broadcasted arange object. At this point, indices_buf contains 1 more token
-        # than the length of the sequences we'll see (because it also contains the token before the sequence starts).
-        buffer_tensor = torch.arange(
-            -seq_cfg.buffer[0] - 1, seq_cfg.buffer[1] + 1, device=indices_bold.device
-        )
-        indices_buf = einops.repeat(
-            indices_bold,
-            "n_bold two -> n_bold seq two",
-            seq=seq_cfg.buffer[0] + seq_cfg.buffer[1] + 2,
-        )
-        indices_buf = torch.stack(
-            [indices_buf[..., 0], indices_buf[..., 1] + buffer_tensor], dim=-1
-        )
+        # Index into the sequence with a buffer. We get all tokens in buffer, plus the token 1 further back (although we
+        # won't be displaying this token in the final vis; it's just for getting effect on loss).
+        buffer_full = (seq_cfg.buffer[0] + 1, -seq_cfg.buffer[1])
+        token_ids = index_with_buffer(tokens, indices_ex, buffer=buffer_full)
+        token_ids_to_display = token_ids[:, 1:]
     else:
-        # If we don't specify a sequence, then do all of the indices.
-        indices_buf = torch.stack(
-            [
-                einops.repeat(
-                    indices_bold[:, 0], "n_bold -> n_bold seq", seq=seq_length
-                ),  # batch indices of bold tokens
-                einops.repeat(
-                    torch.arange(seq_length), "seq -> n_bold seq", n_bold=n_bold
-                ),  # all sequence indices
-            ],
-            dim=-1,
-        )
+        # If we don't specify a sequence, then do all of the seq positions in each seq we pick. In this case, our
+        # display seqs are literally just the full sequences from bold tokens.
+        buffer_full = None
+        token_ids = index_with_buffer(tokens, indices_ex, buffer=None)
+        token_ids_to_display = token_ids
 
-    assert indices_buf.shape == (n_bold, padded_buffer_width, 2)
+    # ! (3) Extract feature activations & residual stream values for those positions
+    # Note - the reason we split on cases here is that when computing the buffer, we need activations & loss effect for
+    # all tokens (and loss effect requires us to compute activations & resid values 1 token back). But when we aren't
+    # computing the buffer, we only need activations for bold token & loss effect on the token after that one.
 
-    # ! (3) Extract the token IDs, feature activations & residual stream values for those positions
-
-    # Get the tokens which will be in our sequences
-    token_ids = eindex(
-        tokens, indices_buf[:, 1:], "[n_bold seq 0] [n_bold seq 1]"
-    )  # shape [batch buf]
-
-    # Now, we split into cases depending on whether we're computing the buffer or not. One kinda weird thing: we get
-    # feature acts for 2 different reasons (token coloring & ablation), and in the case where we're computing the buffer
-    # we need [:, 1:] for coloring and [:, :-1] for ablation, but when we're not we only need [:, bold] for both. So
-    # we split on cases here.
     if seq_cfg.compute_buffer:
-        feat_acts_buf = eindex(
-            feat_acts,
-            indices_buf,
-            "[n_bold buf_plus1 0] [n_bold buf_plus1 1] -> n_bold buf_plus1",
+        # Get tokens we'll use to index correct logits (all the visible ones)
+        token_ids_for_computing_loss = token_ids[:, 1:]
+        # Get feature acts for all sequence positions (all visible used for coloring, 1 back used for loss)
+        feat_acts_buf = index_with_buffer(feat_acts, indices_ex, buffer=buffer_full).to(
+            device
         )
         feat_acts_pre_ablation = feat_acts_buf[:, :-1]
         feat_acts_coloring = feat_acts_buf[:, 1:]
-        resid_post_pre_ablation = eindex(
-            resid_post, indices_buf[:, :-1], "[n_bold buf 0] [n_bold buf 1] d_model"
-        )
-        # The tokens we'll use to index correct logits are the same as the ones which will be in our sequence
-        correct_tokens = token_ids
+        feat_acts_idx = [None for _ in range(n_ex)]
+        # Get residual stream for all sequence positions that come immediately before a visible token (used for loss)
+        resid_post = index_with_buffer(resid_post, indices_ex, buffer=buffer_full)[
+            :, :-1
+        ].to(device)
     else:
-        feat_acts_pre_ablation = eindex(
-            feat_acts, indices_bold, "[n_bold 0] [n_bold 1]"
-        ).unsqueeze(1)
-        feat_acts_coloring = feat_acts_pre_ablation
-        resid_post_pre_ablation = eindex(
-            resid_post, indices_bold, "[n_bold 0] [n_bold 1] d_model"
-        ).unsqueeze(1)
-        # The tokens we'll use to index correct logits are the ones after bold
-        indices_bold_next = torch.stack(
-            [indices_bold[:, 0], indices_bold[:, 1] + 1], dim=-1
+        # Get tokens we'll use to index correct logits (after the bold ones)
+        token_ids_for_computing_loss = (
+            index_with_buffer(tokens, indices_ex, buffer=0, offset=1)
+            .unsqueeze(1)
+            .to(device)
         )
-        correct_tokens = eindex(
-            tokens, indices_bold_next, "[n_bold 0] [n_bold 1]"
-        ).unsqueeze(1)
+        # Get feature acts for just the bold tokens (used for coloring on bold token & loss on token after bold token)
+        feat_acts_pre_ablation = (
+            index_with_buffer(feat_acts, indices_ex, buffer=0).unsqueeze(-1).to(device)
+        )
+        feat_acts_coloring = feat_acts_pre_ablation
+        feat_acts_idx = indices_ex[
+            :, 1
+        ].tolist()  # need to remember which one is the bold one!
+        # Get residual stream for just the bold tokens (used for loss on token after bold token)
+        resid_post = (
+            index_with_buffer(resid_post, indices_ex, buffer=0).unsqueeze(1).to(device)
+        )
 
     # ! (4) Compute the logit effect if this feature is ablated
 
     # Get this feature's output vector, using an outer product over the feature activations for all tokens
-    resid_post_feature_effect = (
-        feat_acts_pre_ablation[..., None] * feature_resid_dir
-    )  # shape [batch buf d_model]
-
-    # Do the ablations, and get difference in logprobs
-    new_resid_post = resid_post_pre_ablation - resid_post_feature_effect
-    new_logits = (new_resid_post / new_resid_post.std(dim=-1, keepdim=True)) @ W_U
-    orig_logits = (
-        resid_post_pre_ablation / resid_post_pre_ablation.std(dim=-1, keepdim=True)
-    ) @ W_U
-    contribution_to_logprobs = orig_logits.log_softmax(dim=-1) - new_logits.log_softmax(
-        dim=-1
+    resid_post_feature_effect = einops.einsum(
+        feat_acts_pre_ablation,
+        feature_resid_dir.to(device),
+        "n_ex buf, d_model -> n_ex buf d_model",
     )
 
-    # ! (4A) Use this to compute the most affected tokens by this feature
+    # Contribution to logits is computed without normalization
+    logit_contribution = resid_post_feature_effect @ model.W_U
+    # Do the ablations, and get difference in logprobs (direct effect)
+    new_logits = resid_final_pre_layernorm_to_logits(
+        resid_post - resid_post_feature_effect, model
+    )
+    orig_logits = resid_final_pre_layernorm_to_logits(resid_post, model)
+    logprobs_contribution = orig_logits.log_softmax(-1) - new_logits.log_softmax(-1)
+    orig_prob = orig_logits.softmax(-1)
+    new_prob = new_logits.softmax(-1)
+
     # The TopK function can improve efficiency by masking the features which are zero
     acts_nonzero = feat_acts_pre_ablation.abs() > 1e-5  # shape [batch buf]
-    top_contribution_to_logits = TopK(
-        contribution_to_logprobs,
-        k=seq_cfg.top_logits_hoverdata,
-        largest=True,
-        tensor_mask=acts_nonzero,
+    top_logit_contribution = TopK(
+        logprobs_contribution, k=seq_cfg.top_logits_hoverdata, tensor_mask=acts_nonzero
     )
-    bottom_contribution_to_logits = TopK(
-        contribution_to_logprobs,
+    bottom_logit_contribution = TopK(
+        logprobs_contribution,
         k=seq_cfg.top_logits_hoverdata,
+        tensor_mask=acts_nonzero,
         largest=False,
-        tensor_mask=acts_nonzero,
     )
 
-    # ! (4B) Use this to compute the loss effect if this feature is ablated
-    # which is just the negative of the change in logprobs
-    loss_contribution = eindex(
-        -contribution_to_logprobs, correct_tokens, "batch seq [batch seq]"
-    )
+    if target_logits is None:
+        # loss_cont[b, s] = -logprobs_cont[b, s, token_ids_for_computing_loss[b, s]]
+        loss_contribution = -eindex(
+            logprobs_contribution, token_ids_for_computing_loss, "batch seq [batch seq]"
+        )
+        logit_contribution = eindex(
+            logit_contribution, token_ids_for_computing_loss, "batch seq [batch seq]"
+        )
+        orig_prob = eindex(
+            orig_prob, token_ids_for_computing_loss, "batch seq [batch seq]"
+        )
+        new_prob = eindex(
+            new_prob, token_ids_for_computing_loss, "batch seq [batch seq]"
+        )
+    else:
+        assert not seq_cfg.compute_buffer, "Not expecting to compute buffer if using target logits (it's more indexing hassle)"
+        target_logits_bold = eindex(
+            target_logits, indices_ex, "[n_ex 0] [n_ex 1] d_vocab"
+        ).unsqueeze(1)
+        loss_orig = cross_entropy_loss(orig_logits, target_logits_bold)
+        loss_new = cross_entropy_loss(new_logits, target_logits_bold)
+        loss_contribution = loss_orig - loss_new
+        logit_contribution = orig_prob = new_prob = None
 
-    # ! (5) Store the results in a SequenceMultiGroupData object
+    # ! (5) If this is an attention SAE, then do DFA
+    if use_dfa:
+        assert seq_cfg.dfa_buffer is not None
+        indices_batch, indices_dest = indices_ex.unbind(dim=-1)
+        v = cache[v_hook_name][indices_batch].to(device)  # [k src n_heads d_head]
+        pattern = cache[pattern_hook_name][indices_batch, :, indices_dest].to(
+            device
+        )  # [k n_heads src]
+        v_weighted = (
+            v * einops.rearrange(pattern, "k n_heads src -> k src n_heads 1")
+        ).flatten(-2)  # [k src d_in]
+        dfa = v_weighted @ sae.W_enc[:, feat_idx]  # [k src]
+        indices_src = dfa.argmax(dim=-1).to(indices_ex.device)  # [k,]
+        indices_ex_src = torch.stack([indices_batch, indices_src], dim=-1)
+        indices_ex_src[indices_ex_src[:, 1] < seq_cfg.dfa_buffer[0]] = (
+            seq_cfg.dfa_buffer[0]
+        )
+        dfa_buffer = (seq_cfg.dfa_buffer[0], -seq_cfg.dfa_buffer[1])
+        dfa_token_ids = index_with_buffer(tokens, indices_ex_src, buffer=dfa_buffer)
+        indices_ex_src_for_values = torch.stack(
+            [torch.arange(len(indices_src)), indices_src.cpu()], dim=-1
+        )
+        dfa_values = index_with_buffer(
+            dfa, indices_ex_src_for_values, buffer=dfa_buffer
+        )
+    else:
+        dfa_token_ids = dfa_values = indices_ex_src = None
 
-    # Now that we've indexed everything, construct the batch of SequenceData objects
+    # ! (6) Store the results in a SeqMultiGroupData object
     sequence_groups_data = []
     group_sizes_cumsum = np.cumsum(
         [0] + [len(indices) for indices in indices_dict.values()]
     ).tolist()
+    buffer_range = (
+        range(-seq_cfg.buffer[0], seq_cfg.buffer[1] + 1)
+        if seq_cfg.buffer is not None
+        else range(tokens.shape[1])
+    )
+    dfa_buffer_range = (
+        range(-seq_cfg.dfa_buffer[0], seq_cfg.dfa_buffer[1] + 1)
+        if seq_cfg.dfa_buffer is not None
+        else range(tokens.shape[1])
+    )
     for group_idx, group_name in enumerate(indices_dict.keys()):
         seq_data = [
             SequenceData(
-                token_ids=token_ids[i].tolist(),
+                token_ids=token_ids_to_display[i].tolist(),
+                token_posns=[
+                    f"({indices_ex[i, 0]}, {indices_ex[i, 1] + j})"
+                    for j in buffer_range
+                ],
                 feat_acts=[round(f, 4) for f in feat_acts_coloring[i].tolist()],
+                feat_acts_idx=feat_acts_idx[i],
                 loss_contribution=loss_contribution[i].tolist(),
-                token_logits=feat_logits[token_ids[i]].tolist(),
-                top_token_ids=top_contribution_to_logits.indices[i].tolist(),
-                top_logits=top_contribution_to_logits.values[i].tolist(),
-                bottom_token_ids=bottom_contribution_to_logits.indices[i].tolist(),
-                bottom_logits=bottom_contribution_to_logits.values[i].tolist(),
+                logit_contribution=logit_contribution[i].tolist()
+                if logit_contribution is not None
+                else None,
+                orig_prob=orig_prob[i].tolist() if orig_prob is not None else None,
+                new_prob=new_prob[i].tolist() if new_prob is not None else None,
+                token_logits=feat_logits[token_ids_to_display[i]].tolist(),
+                top_token_ids=top_logit_contribution.indices[i].tolist(),
+                top_logits=top_logit_contribution.values[i].tolist(),
+                bottom_token_ids=bottom_logit_contribution.indices[i].tolist(),
+                bottom_logits=bottom_logit_contribution.values[i].tolist(),
+                dfa_token_ids=dfa_token_ids[i].tolist()
+                if dfa_token_ids is not None
+                else [],
+                dfa_values=dfa_values[i].tolist() if dfa_values is not None else [],
+                dfa_token_posns=[
+                    f"({indices_ex_src[i, 0]}, {indices_ex_src[i, 1] + j})"
+                    for j in dfa_buffer_range
+                ]
+                if indices_ex_src is not None
+                else [],
             )
             for i in range(
                 group_sizes_cumsum[group_idx], group_sizes_cumsum[group_idx + 1]
             )
         ]
-        sequence_groups_data.append(SequenceGroupData(group_name, seq_data))
+        sequence_groups_data.append(SeqGroupData(seq_data, title=group_name))
 
-    return SequenceMultiGroupData(sequence_groups_data)
+    return SeqMultiGroupData(sequence_groups_data)
 
 
 @torch.inference_mode()
@@ -867,59 +916,35 @@ def parse_prompt_data(
     feat_acts: Float[Tensor, "seq feats"],
     feature_resid_dir: Float[Tensor, "feats d_model"],
     resid_post: Float[Tensor, "seq d_model"],
-    W_U: Float[Tensor, "d_model d_vocab"],
+    model: HookedTransformer,
     feature_idx: list[int] | None = None,
     num_top_features: int = 10,
-) -> dict[str, tuple[list[int], list[str]]]:
+) -> tuple[
+    dict[str, list[dict[Literal["feature", "title"], int | str]]],
+    dict[int, SeqMultiGroupData],
+]:
     """
     Gets data needed to create the sequences in the prompt-centric vis (displaying dashboards for the most relevant
     features on a prompt).
 
-    This function exists so that prompt dashboards can be generated without using our AutoEncoder or
-    TransformerLens(Wrapper) classes.
-
-    Args:
-        tokens: Int[Tensor, "batch seq"]
-            The tokens we'll be using to get the feature activations. Note that we might not be using all of them; the
-            number used is determined by `fvp.total_batch_size`.
-
-        str_toks:  list[str]
-            The tokens as a list of strings, so that they can be visualized in HTML.
-
-        sae_vis_data: SaeVisData
-             The object storing all data for each feature. We'll set each `feature_data.prompt_data` to the
-             data we get from `prompt`.
-
-        feat_acts: Float[Tensor, "seq feats"]
-            The activations values of the features across the sequence.
-
-        feature_resid_dir: Float[Tensor, "feats d_model"]
-            The directions that each feature writes to the residual stream.
-
-        resid_post: Float[Tensor, "seq d_model"]
-            The activations of the final layer of the model before the unembed.
-
-        W_U: Float[Tensor, "d_model d_vocab"]
-            The model's unembed weights for the logit lens.
-
-        feature_idx: list[int] or None
-            The features we're actually computing. These might just be a subset of the model's full features.
-
-        num_top_features: int
-            The number of top features to display in this view, for any given metric.
-
     Returns:
-        scores_dict: dict[str, tuple[list[int], list[str]]]
-            A dictionary mapping keys like "act_quantile|'django' (0)" to a tuple of lists, where the first list is the
-            feature indices, and the second list is the string-formatted values of the scores.
+        scores_dict: dict[str, list[dict[Literal["feature", "title"], int | str]]]
+            A dictionary mapping keys like "act_quantile|'django' (0)" to a list of tuples, each of
+            the form (feature_idx, title).
 
-    As well as returning this dictionary, this function will also set `FeatureData.prompt_data` for each feature in
-    `sae_vis_data` (this is necessary for getting the prompts in the prompt-centric vis). Note this design choice could
-    have been done differently (i.e. have this function return a list of the prompt data for each feature). I chose this
-    way because it means the FeatureData._get_html_data_prompt_centric can work fundamentally the same way as
-    FeatureData._get_html_data_feature_centric, rather than treating the prompt data object as a different kind of
-    component in the vis.
+        prompt_data_dict: dict[int, SeqMultiGroupData]
+            A dictionary mapping feature index to the sequence multigroup data for that feature. Note
+            that it will only contain data for a single prompt, but we wrap it in this for consistency.
     """
+    # Populate our initial dictionaries
+    seq_keys = [f"{t!r} ({i})" for i, t in enumerate(str_toks)]
+    metrics = ["act_size", "act_quantile", "loss_effect"]
+    scores_dict: dict[str, list[dict[Literal["feature", "title"], int | str]]] = {
+        f"{metric}|{seq_key}": []
+        for metric, seq_key in itertools.product(metrics, seq_keys)
+    }
+    prompt_data_dict: dict[int, SeqMultiGroupData] = {}
+
     if feature_idx is None:
         feature_idx = list(sae_vis_data.feature_data_dict.keys())
     n_feats = len(feature_idx)
@@ -938,8 +963,8 @@ def parse_prompt_data(
     # correct_token_unembeddings = model_wrapped.W_U[:, tokens[0, 1:]] # [d_model seq]
     orig_logits = (
         resid_post / resid_post.std(dim=-1, keepdim=True)
-    ) @ W_U  # [seq d_vocab]
-    raw_logits = feature_resid_dir @ W_U  # [feats d_vocab]
+    ) @ model.W_U  # [seq d_vocab]
+    raw_logits = feature_resid_dir @ model.W_U  # [feats d_vocab]
 
     for i, feat in enumerate(feature_idx):
         # ! Calculate the sequence data for each feature, and store it as FeatureData.prompt_data
@@ -951,7 +976,9 @@ def parse_prompt_data(
 
         # Ablate the output vector from the residual stream, and get logits post-ablation
         new_resid_post = resid_post - resid_post_feature_effect
-        new_logits = (new_resid_post / new_resid_post.std(dim=-1, keepdim=True)) @ W_U
+        new_logits = (
+            new_resid_post / new_resid_post.std(dim=-1, keepdim=True)
+        ) @ model.W_U
 
         # Get the top5 & bottom5 changes in logits (don't bother with `efficient_topk` cause it's small)
         contribution_to_logprobs = orig_logits.log_softmax(
@@ -962,30 +989,45 @@ def parse_prompt_data(
             contribution_to_logprobs[:-1], k=5, largest=False
         )
 
-        # Get the change in loss (which is negative of change of logprobs for correct token)
+        # Get the change in logprobs (unnormalized) and loss (which is negative of change of logprobs for correct token)
+        logit_contribution = einops.einsum(
+            resid_post_feature_effect[:-1],
+            model.W_U[:, tokens[0, 1:]],
+            "seq d_model, d_model seq -> seq",
+        )
         loss_contribution = eindex(
             -contribution_to_logprobs[:-1], tokens[0, 1:], "seq [seq]"
         )
         feats_loss_contribution[i, :] = loss_contribution
 
-        # Store the sequence data
-        sae_vis_data.feature_data_dict[feat].prompt_data = SequenceData(
-            token_ids=tokens.squeeze(0).tolist(),
-            feat_acts=[round(f, 4) for f in feat_acts[:, i].tolist()],
-            loss_contribution=[0.0] + loss_contribution.tolist(),
-            token_logits=raw_logits[i, tokens.squeeze(0)].tolist(),
-            top_token_ids=top_contribution_to_logits.indices.tolist(),
-            top_logits=top_contribution_to_logits.values.tolist(),
-            bottom_token_ids=bottom_contribution_to_logits.indices.tolist(),
-            bottom_logits=bottom_contribution_to_logits.values.tolist(),
+        # Store the sequence data, wrapped in a multi-group which only has one element
+        prompt_data_dict[feat] = SeqMultiGroupData(
+            [
+                SeqGroupData(
+                    [
+                        SequenceData(
+                            token_ids=tokens.squeeze(0).tolist(),
+                            feat_acts=[round(f, 4) for f in feat_acts[:, i].tolist()],
+                            loss_contribution=loss_contribution.tolist(),
+                            logit_contribution=logit_contribution.tolist(),
+                            token_logits=raw_logits[i, tokens.squeeze(0)].tolist(),
+                            top_token_ids=top_contribution_to_logits.indices.tolist(),
+                            top_logits=top_contribution_to_logits.values.tolist(),
+                            bottom_token_ids=bottom_contribution_to_logits.indices.tolist(),
+                            bottom_logits=bottom_contribution_to_logits.values.tolist(),
+                        )
+                    ]
+                )
+            ],
+            is_prompt=True,
         )
 
     # ! Lastly, return a dictionary mapping each key like 'act_quantile|"django" (0)' to a list of feature indices & scores
 
-    # Get a dict with keys like f"act_quantile|'My' (1)" and values (feature indices list, feature score values list)
-    scores_dict: dict[str, tuple[list[int], list[str]]] = {}
+    def title(metric: str, feat: int, score_str: str):
+        return f"<h3>#{feat}<br>{METRIC_TITLES[metric]} = {score_str}</h3><hr>"
 
-    for seq_pos, seq_key in enumerate([f"{t!r} ({i})" for i, t in enumerate(str_toks)]):
+    for seq_pos, seq_key in enumerate(seq_keys):
         # Filter the feature activations, since we only need the ones that are non-zero
         feat_acts_nonzero_filter = utils.to_numpy(feat_acts[seq_pos] > 0)
         feat_acts_nonzero_locations = np.nonzero(feat_acts_nonzero_filter)[0].tolist()
@@ -995,29 +1037,35 @@ def parse_prompt_data(
         if feat_acts_nonzero_filter.sum() > 0:
             k = min(num_top_features, _feat_acts.numel())
 
-            # Get the top features by activation size. This is just applying a TopK function to the feat acts (which
-            # were stored by the code before this). The feat acts are formatted to 3dp.
-            act_size_topk = TopK(_feat_acts, k=k, largest=True)
-            top_features = _feature_idx[act_size_topk.indices].tolist()
-            formatted_scores = [f"{v:.3f}" for v in act_size_topk.values]
-            scores_dict[f"act_size|{seq_key}"] = (top_features, formatted_scores)
+            # Get the top features by activation size. This is just applying a TopK function to feat
+            # acts (which were stored by the code before this)
+            metric = "act_size"
+            topk = TopK(_feat_acts, k=k, largest=True)
+            scores_dict[f"{metric}|{seq_key}"] = [
+                {"feature": feat, "title": title(metric, feat, score)}
+                for feat, score in zip(
+                    _feature_idx[topk.indices].tolist(),
+                    [f"{v:.3f}" for v in topk.values.tolist()],
+                )
+            ]
 
             # Get the top features by activation quantile. We do this using the `feature_act_quantiles` object, which
             # was stored `sae_vis_data`. This quantiles object has a method to return quantiles for a given set of
             # data, as well as the precision (we make the precision higher for quantiles closer to 100%, because these
             # are usually the quantiles we're interested in, and it lets us to save space in `feature_act_quantiles`).
+            metric = "act_quantile"
             act_quantile, act_precision = sae_vis_data.feature_stats.get_quantile(
                 _feat_acts, feat_acts_nonzero_locations
             )
-            act_quantile_topk = TopK(act_quantile, k=k, largest=True)
-            act_formatting = [
-                f".{act_precision[i]-2}%" for i in act_quantile_topk.indices
+            topk = TopK(act_quantile, k=k, largest=True)
+            act_formatting = [f".{act_precision[i]-2}%" for i in topk.indices]
+            scores_dict[f"{metric}|{seq_key}"] = [
+                {"feature": feat, "title": title(metric, feat, score)}
+                for feat, score in zip(
+                    _feature_idx[topk.indices].tolist(),
+                    [f"{v:{f}}" for v, f in zip(topk.values.tolist(), act_formatting)],
+                )
             ]
-            top_features = _feature_idx[act_quantile_topk.indices].tolist()
-            formatted_scores = [
-                f"{v:{f}}" for v, f in zip(act_quantile_topk.values, act_formatting)
-            ]
-            scores_dict[f"act_quantile|{seq_key}"] = (top_features, formatted_scores)
 
         # We don't measure loss effect on the first token
         if seq_pos == 0:
@@ -1036,11 +1084,17 @@ def parse_prompt_data(
             # Get the top features by loss effect. This is just applying a TopK function to the loss effects (which were
             # stored by the code before this). The loss effects are formatted to 3dp. We look for the most negative
             # values, i.e. the most loss-reducing features.
-            loss_contribution_topk = TopK(_loss_contribution, k=k, largest=False)
-            top_features = _feature_idx_prev[loss_contribution_topk.indices].tolist()
-            formatted_scores = [f"{v:+.3f}" for v in loss_contribution_topk.values]
-            scores_dict[f"loss_effect|{seq_key}"] = (top_features, formatted_scores)
-    return scores_dict
+            metric = "loss_effect"
+            topk = TopK(_loss_contribution, k=k, largest=False)
+            scores_dict[f"{metric}|{seq_key}"] = [
+                {"feature": feat, "title": title(metric, feat, score)}
+                for feat, score in zip(
+                    _feature_idx_prev[topk.indices].tolist(),
+                    [f"{v:+.3f}" for v in topk.values.tolist()],
+                )
+            ]
+
+    return scores_dict, prompt_data_dict
 
 
 @torch.inference_mode()
@@ -1048,70 +1102,61 @@ def get_prompt_data(
     sae_vis_data: SaeVisData,
     prompt: str,
     num_top_features: int,
-) -> dict[str, tuple[list[int], list[str]]]:
+) -> dict[str, list[dict[Literal["feature", "title"], int | str]]]:
     """
-    Gets data that will be used to create the sequences in the prompt-centric HTML visualisation, i.e. an object of
-    type SequenceData for each of our features.
+    Does 2 things:
+        (1) Adds "promptData" into the SaeVisData object's feature dict, so it can be used in the prompt-centric layout
+        (2) Returns a dictionary mapping score keys (stringified) to a sorted list of feature IDs & their titles
 
-    Args:
-        sae_vis_data:     The object storing all data for each feature. We'll set each `feature_data.prompt_data` to the
-                          data we get from `prompt`.
-        prompt:           The prompt we'll be using to get the feature activations.#
-        num_top_features: The number of top features we'll be getting data for.
-
-    Returns:
-        scores_dict:      A dictionary mapping keys like "act_quantile|0" to a tuple of lists, where the first list is
-                          the feature indices, and the second list is the string-formatted values of the scores.
-
-    As well as returning this dictionary, this function will also set `FeatureData.prompt_data` for each feature in
-    `sae_vis_data`. This is because the prompt-centric vis will call `FeatureData._get_html_data_prompt_centric` on each
-    feature data object, so it's useful to have all the data in once place! Even if this will get overwritten next
-    time we call `get_prompt_data` for this same `sae_vis_data` object.
+    We do this simultaneously for every scoring metric & every seq pos in the prompt.
     """
 
-    # ! Boring setup code
-    feature_idx = list(sae_vis_data.feature_data_dict.keys())
-    encoder = sae_vis_data.encoder
-    assert isinstance(encoder, AutoEncoder)
+    features = list(sae_vis_data.feature_data_dict.keys())
+    sae = sae_vis_data.sae
+    assert isinstance(sae, SAE)
     model = sae_vis_data.model
-    assert isinstance(model, HookedTransformer)
-    cfg = sae_vis_data.cfg
-    assert isinstance(cfg.hook_point, str), f"{cfg.hook_point=}, expected a string"
+    assert isinstance(model, HookedSAETransformer)
 
     str_toks: list[str] = model.tokenizer.tokenize(prompt)  # type: ignore
     tokens = model.tokenizer.encode(prompt, return_tensors="pt").to(device)  # type: ignore
     assert isinstance(tokens, torch.Tensor)
 
-    model_wrapped = TransformerLensWrapper(model, cfg.hook_point)
-
-    feature_act_dir = encoder.W_enc[:, feature_idx]  # [d_in feats]
-    feature_out_dir = encoder.W_dec[feature_idx]  # [feats d_in]
-    feature_resid_dir = to_resid_dir(feature_out_dir, model_wrapped)  # [feats d_model]
+    feature_act_dir = sae.W_enc[:, features]  # [d_in feats]
+    feature_out_dir = sae.W_dec[features]  # [feats d_in]
+    feature_resid_dir = to_resid_dir(feature_out_dir, sae, model)  # [feats d_model]
     assert (
         feature_act_dir.T.shape
         == feature_out_dir.shape
-        == (len(feature_idx), encoder.cfg.d_in)
+        == (len(features), sae.cfg.d_in)
     )
 
-    # ! Define hook functions to cache all the info required for feature ablation, then run those hook fns
+    resid_final_hook_name = utils.get_act_name("resid_post", model.cfg.n_layers - 1)
+    acts_post_hook_name = f"{sae.cfg.hook_name}.hook_sae_acts_post"
+    sae.use_error_term = True
+    _, cache = model.run_with_cache_with_saes(
+        tokens,
+        saes=[sae],
+        stop_at_layer=model.cfg.n_layers,
+        names_filter=[acts_post_hook_name, resid_final_hook_name],
+        remove_batch_dim=True,
+    )
+    sae.use_error_term = False
 
-    resid_post, act_post = model_wrapped(tokens, return_logits=False)
-    resid_post: Tensor = resid_post.squeeze(0)
-    feat_acts = compute_feat_acts(act_post, feature_idx, encoder).squeeze(
-        0
-    )  # [seq feats]
-
-    # ! Use the data we've collected to make the scores_dict and update the sae_vis_data
-    scores_dict = parse_prompt_data(
+    scores_dict, prompt_data_dict = parse_prompt_data(
         tokens=tokens,
         str_toks=str_toks,
         sae_vis_data=sae_vis_data,
-        feat_acts=feat_acts,
+        feat_acts=cache[acts_post_hook_name][:, features],
         feature_resid_dir=feature_resid_dir,
-        resid_post=resid_post,
-        W_U=model.W_U,
-        feature_idx=feature_idx,
+        resid_post=cache[resid_final_hook_name],
+        model=model,
+        feature_idx=features,
         num_top_features=num_top_features,
     )
+
+    # Set prompt data in feature_data_dict, and return scores dict
+
+    for feature_idx, prompt_data in prompt_data_dict.items():
+        sae_vis_data.feature_data_dict[feature_idx]["prompt"] = prompt_data
 
     return scores_dict
