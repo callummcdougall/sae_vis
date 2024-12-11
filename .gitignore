@@ -173,4 +173,5 @@ april-fools
 requirements.txt
 othello_world*
 trained_saes*
+sae_vis/demos/train_othello.py
 *_demo*.py
