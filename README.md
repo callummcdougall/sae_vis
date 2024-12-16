@@ -56,3 +56,6 @@ This project uses [Ruff](https://docs.astral.sh/ruff/) for formatting and lintin
     - OthelloGPT SAEs with linear probes (input / output space)
     - Attention output SAEs with max DFA visualized
     - Tokens labelled with their `(batch, seq)` indices as well as the change in correct-token probability on feature ablation, when hovered over
+- `0.3.1` - fix transformerlens dependency
+- `0.3.2` - adjust pyright type-checking
+- `0.3.3` - remove pyright type-checking
