@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "sae-vis"
-version = "0.3.1"
+version = "0.3.2"
 description = "Open-source SAE visualizer, based on Anthropic's published visualizer."
 authors = ["Callum McDougall <cal.s.mcdougall@gmail.com>"]
 readme = "README.md"
