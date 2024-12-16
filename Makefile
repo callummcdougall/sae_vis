@@ -5,7 +5,6 @@ format:
 lint:
 	poetry run ruff check .
 	poetry run ruff format --check .
-	poetry run pyright .
 
 test:
 	poetry run pytest

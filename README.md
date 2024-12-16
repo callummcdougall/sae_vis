@@ -59,3 +59,4 @@ This project uses [Ruff](https://docs.astral.sh/ruff/) for formatting and lintin
 - `0.3.1` - fix transformerlens dependency
 - `0.3.2` - adjust pyright type-checking
 - `0.3.3` - remove pyright type-checking
+- `0.3.4` - remove pyright type-checking (v2)
