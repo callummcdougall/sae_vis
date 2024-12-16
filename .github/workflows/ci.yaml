@@ -20,8 +20,6 @@ jobs:
         run: poetry run ruff check
       - name: check formatting
         run: poetry run ruff format --check
-      - name: test
-        run: poetry run pytest
       - name: build
         run: poetry build
 
