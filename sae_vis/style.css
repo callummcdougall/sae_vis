@@ -1,0 +1,263 @@
+/* ! General styles */
+
+/* Styling of the top-level container */
+.grid-container {
+    font-family: Consolas;
+    border: 1px solid #e6e6e6;
+    background-color: #fff;
+    margin: 30px 10px;
+    box-shadow: 0 5px 5px rgba(0, 0, 0, 0.25);
+    display: grid;
+    justify-content: start;
+    grid-template-columns: auto;
+    overflow-x: auto;
+    overflow-y: visible;
+    grid-auto-flow: column;
+    white-space: nowrap;
+    padding-bottom: 12px;
+    padding-top: 35px;
+    padding-left: 20px;
+    padding-right: 20px;
+    width: max-content;
+}
+/* Styling each grid column (note, the max-height controls height of grid-container) */
+.grid-column {
+    margin-left: 20px;
+    padding-right: 20px;
+    width: max-content;
+    overflow-y: auto;
+}
+/* Styling the scrollbars */
+::-webkit-scrollbar {
+    height: 10px;
+    width: 10px;
+}
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+}
+::-webkit-scrollbar-thumb {
+    background: #999;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+/* Styling for plotly charts (acts density, logits histogram) */
+.plotly-hist {
+    margin-bottom: 25px;
+    margin-top: 0px;
+    height: 160px;
+    width: 360px;
+}
+/* Margins below the titles (most subtitles are h4, except for the prompt-centric view which has h2 titles) */
+h4 {
+    margin-top: 0px;
+    margin-bottom: 10px;
+    font-size: 15px;
+}
+/* Sometimes I want to put highlights in my headers! */
+.highlight-header {
+    font-size: 0.85em;
+    margin-bottom: 5px;
+    /* font-size: 0.8em;
+    font-weight: bold; */
+
+    > span {
+        padding: 0px 4px;
+        border-radius: 3px;
+    }   
+}
+/* Some space below the <hr> line in prompt-centric vis */
+hr {
+    margin-bottom: 35px;
+}
+
+/* ! Styling of the dropdowns */
+
+select {
+    appearance: none;
+    border: 0;
+    flex: 1;
+    padding: 0 1em;
+    background-color: #eee;
+    cursor: pointer;
+}
+.select {
+    box-shadow: 0 5px 5px rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+    display: flex;
+    width: 100px;
+    height: 25px;
+    border-radius: .25em;
+    overflow: hidden;
+    position: relative;
+    margin-right: 15px;
+}
+.select::after {
+    position: absolute;
+    content: '\25BC';
+    font-size: 9px;
+    top: 0;
+    right: 0;
+    padding: 1em;
+    background-color: #ddd;
+    transition: .25s all ease;
+    pointer-events: none;
+}
+.select:hover::after {
+    color: black;
+}
+#dropdown-container {
+    margin-left: 10px;
+    margin-top: 20px;
+    display: flex;
+    flex-wrap: wrap;
+}
+select {
+    font-family: Consolas;
+}
+
+/* ! Sequences */
+
+.seq-group {
+    overflow-x: auto; /* adds horizontal scrollbar */
+    overflow-y: visible; /* ? don't think this changes behaviour anymore */
+    padding-bottom: 5px; /* bit more room between last seq and horizontal scrollbar */
+    padding-top: 5px;  /* so you can see the black bars on the top of tokens */
+    margin-bottom: 10px; /* gap between vertically stacked seq groups */
+}
+.seq {
+    margin-bottom: 11px; /* space between sequences within a group */
+}
+.token {
+    font-size: 0.8em;
+    border-top-left-radius: 3px;
+    border-top-right-radius: 3px;
+    padding: 1px;
+    color: black;
+    display: inline;
+    white-space: pre-wrap; /* preserves whitespaces in seq tokens */
+}
+/* All the messy hovering stuff! */
+.hover-text {
+    position: relative;
+    cursor: pointer;
+    display: inline-block; /* Needed to contain the tooltip */
+    box-sizing: border-box;
+}
+.tooltip {
+    font-family: 'system-ui'; /* fields in hover text shouldn't be code font */
+    font-size: 1.1em;
+    background-color: #fff;
+    color: #333; /* ? why is this here? */
+    text-align: center;
+    border-radius: 10px;
+    padding: 5px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.25);
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    /* to stand out from rest of tooltip content, code should have grey background */
+    code { 
+        font-family: Consolas;
+        background-color: #ddd;
+        padding: 0px 3px;
+        border-radius: 3px;
+    }
+}
+.token:hover {
+    border-top: 3px solid black;
+}
+.tooltip-container {
+    position: absolute;
+    pointer-events: none;
+}
+.hover-text:hover + .tooltip-container .tooltip {
+    display: block;
+}
+
+/* ! Tables */
+
+table {
+    border: unset;
+    color: black;
+    border-collapse: collapse;
+    width: -moz-fit-content;
+    width: -webkit-fit-content;
+    width: fit-content;
+    margin-left: auto;
+    margin-right: auto;
+    font-size: 0.8em;
+}
+table.table-left tr {
+    border-bottom: 1px solid #eee;
+    padding: 15px;
+}
+table.table-left td {
+    padding: 3px 4px;
+}
+table.table-left {
+    width: 100%;
+}
+table.table-left td.left-aligned {
+    max-width: 120px;
+    overflow-x: hidden;
+}
+td {
+    border: none;
+    padding: 2px 4px;
+    white-space: nowrap;
+}
+.right-aligned {
+    text-align: right;
+}
+.left-aligned {
+    text-align: left;
+}
+.center-aligned {
+    text-align: center;
+    padding-bottom: 8px;
+}
+table span {
+    background-color: #ddd;
+    padding: 0px 4px;
+    border-radius: 3px;
+    white-space: pre-wrap; /* preserves whitespaces in table tokens */
+}
+.table-container {
+    width: 100%;
+}
+.half-width-container {
+    display: flex;
+}
+.half-width {
+    width: 50%;
+    margin-right: -4px;
+}
+
+/* Feature tables should have space below them, also they should have a min column width */
+.featureTables table {
+    margin-bottom: 25px;
+    min-width: 250px;
+}
+/* Configure logits table container (i.e. the thing containing the smaller and larger tables) */
+.logitsTable {
+    min-width: 375px;
+    display: flex;
+    overflow-x: hidden;
+    margin-bottom: 20px;
+}
+/* Code is always bold in this table (this is just the neg/pos string tokens) */
+.logitsTable code {
+    font-weight: bold;
+}
+/* Set width of the tables inside the container (so they can stack horizontally), also put a gap between them */
+.logitsTable > div.positive {
+    width: 47%;
+}
+.logitsTable > div.negative {
+    width: 47%;
+    margin-right: 5%;
+}
